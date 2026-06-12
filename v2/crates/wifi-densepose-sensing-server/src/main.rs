@@ -4408,7 +4408,25 @@ async fn calibration_start(State(state): State<SharedState>) -> Json<serde_json:
             _ => {} // Stale/Expired/Uncalibrated — ok to recalibrate
         }
     }
-    match FieldModel::new(field_bridge::single_link_config()) {
+    // ThroughNet: size the field model to the live CSI frame width. This firmware
+    // streams 192 raw subcarriers, not the 56-subcarrier default, so a fixed config
+    // makes feed_calibration reject every frame with a dimension mismatch.
+    let observed_sc = s
+        .frame_history
+        .back()
+        .map(|f| f.len())
+        .or_else(|| {
+            s.node_states
+                .values()
+                .filter_map(|ns| ns.frame_history.back())
+                .map(|f| f.len())
+                .find(|&n| n > 0)
+        })
+        .filter(|&n| n > 0)
+        .unwrap_or(56);
+    let mut cfg = field_bridge::single_link_config();
+    cfg.n_subcarriers = observed_sc;
+    match FieldModel::new(cfg) {
         Ok(fm) => {
             s.field_model = Some(fm);
             Json(serde_json::json!({
@@ -5236,6 +5254,17 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                     s.frame_history.push_back(frame.amplitudes.clone());
                     if s.frame_history.len() > FRAME_HISTORY_CAPACITY {
                         s.frame_history.pop_front();
+                    }
+
+                    // ThroughNet fix: feed the field model during calibration from the
+                    // CSI-frame path. Upstream only fed from the vitals-packet handlers,
+                    // which never fire for this firmware's packet mix — so calibration
+                    // collected 0 frames. Clones only while a calibration is active.
+                    if s.field_model.is_some() {
+                        let fh = s.frame_history.clone();
+                        if let Some(ref mut fm) = s.field_model {
+                            field_bridge::maybe_feed_calibration(fm, &fh);
+                        }
                     }
 
                     // ── ADR-099: real-time introspection tap ────────────────

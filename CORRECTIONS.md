@@ -82,3 +82,26 @@ TODO stub (`csi_collector.c:765`). Needs a more robust on-device CSI traffic
 source (self-ping a host that replies, NDP injection, channel pinning, or
 documenting that ambient channel traffic is required). **Open — yield tuning is
 the current focus.**
+
+## 8. 🟡✅ Host firewall (ufw) silently drops the CSI UDP stream (Linux)
+
+Upstream docs only give a *Windows* firewall rule for UDP 5005. On Linux with **ufw**
+active, inbound UDP 5005 is dropped and the sensing server receives nothing — while
+ping/ICMP still works, so it looks like a board fault. Fix: `sudo ufw allow 5005/udp`.
+Upstream action: document the Linux rule alongside the Windows one.
+
+## 9. 🔴✅ Empty-room calibration collected 0 frames (three compounding bugs)
+
+`/api/v1/calibration/*` never worked on the ESP32 path. Fixed in ThroughNet:
+- **Chicken-and-egg guard:** `field_bridge::maybe_feed_calibration` only fed when status
+  was already `Collecting`, but the only thing that sets `Collecting` is the first feed →
+  it never started. Now also feeds while `Uncalibrated`.
+- **Feed wired only into the vitals-packet handlers**, which this firmware's packet mix
+  never triggers. Added a feed on the **CSI-frame path** (`main.rs`), where data flows.
+- **Hardcoded 56 subcarriers** but the ESP32 streams **192** → `feed_calibration` rejected
+  every frame (`Dimension mismatch`). `calibration_start` now sizes the field model to the
+  live frame width.
+- Also lowered `min_calibration_frames` 12_000 → 1_800 (~60 s vs ~6.5 min).
+
+Result: calibration reaches `Fresh` (verified: 1861 frames, eigenvalue-based occupancy).
+Caveat: needs traffic on the channel to keep CSI yield up during collection (see #7).

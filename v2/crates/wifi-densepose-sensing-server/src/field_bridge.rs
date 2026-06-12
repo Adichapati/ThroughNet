@@ -35,6 +35,9 @@ const MAX_SINGLE_LINK_OCCUPANCY: usize = 3;
 pub fn single_link_config() -> FieldModelConfig {
     FieldModelConfig {
         n_links: 1,
+        // Upstream default (12_000 ≈ 10 min @ 20 Hz) is impractical for an interactive
+        // single-node empty-room calibration; ~1_800 ≈ 60 s at ~30 fps (ThroughNet).
+        min_calibration_frames: 1_800,
         ..FieldModelConfig::default()
     }
 }
@@ -102,14 +105,21 @@ pub fn occupancy_or_fallback(
 /// Only acts when the model status is `Collecting`. Wraps the latest frame
 /// as a single-link observation (n_links=1) and feeds it.
 pub fn maybe_feed_calibration(field: &mut FieldModel, frame_history: &VecDeque<Vec<f64>>) {
-    if field.status() != CalibrationStatus::Collecting {
+    // `feed_calibration()` flips Uncalibrated -> Collecting on the first frame, so we
+    // must also feed while Uncalibrated — otherwise collection never starts and the
+    // frame count stays at 0 (ThroughNet fix; upstream only fed when already Collecting).
+    // Stop once finalized (Fresh) or aged out (Stale/Expired).
+    if !matches!(
+        field.status(),
+        CalibrationStatus::Uncalibrated | CalibrationStatus::Collecting
+    ) {
         return;
     }
     if let Some(latest) = frame_history.back() {
         // Single-link observation: [1][n_subcarriers]
         let observations = vec![latest.clone()];
         if let Err(e) = field.feed_calibration(&observations) {
-            tracing::debug!("FieldModel calibration feed: {e}");
+            tracing::debug!("FieldModel calibration feed rejected: {e}");
         }
     }
 }
