@@ -123,3 +123,30 @@ Provisioning board B on the same port where board A was last provisioned silentl
 re-applies A's keys (observed: board 2 inherited `node_id=3`). Workaround: always
 pass the full identity flags, or `--reset`. Proper fix: key the state by the chip's
 MAC (esptool read-mac) instead of the port path.
+
+## 12. 🔴✅ Fleet-wide CSI ingest dropouts: un-locked TX roaming between mesh units
+
+After Phase-1 deployment, server-side CSI ingest showed minutes-long ON/OFF episodes
+(seconds of full-rate frames, then nothing) that looked exactly like a host-side
+networking fault, and burned a long investigation across firewall, socket patterns,
+802.11 powersave, PCIe runtime PM, and the tokio receiver.
+
+**Real root cause:** #10, but on the **TX** node. The RX nodes were BSSID-locked, the
+TX wasn't. The mesh periodically steered the TX board to a different unit on a
+different channel; its ESP-NOW beacons moved channel with it, and every RX went deaf
+simultaneously (fleet-wide dropout). When the mesh steered it back, ingest "healed".
+**Fix: ALL nodes — TX included — must be BSSID-locked to the same mesh unit.** After
+locking the whole fleet: 540-560 frames/node per 15 s window, 100% of windows, direct
+ingest on UDP 5005, no workarounds needed.
+
+**Debugging lesson (cost us a day):** during the investigation our shell-based
+measurement idiom silently degraded — `for i in $(seq 1 15); do ping -c1 -W1
+127.0.0.1; done`, used as a 15-second delay, actually completes in ~36 **milliseconds**
+(loopback ping replies instantly; `-c1` exits on reply, `-W1` never engages). Every
+"N-second" observation window built on it was really tens of milliseconds, which
+manufactured phantom evidence of ingest starvation, a dead keepalive thread, frozen
+process timers, and a NIC powersave doze — all wrong, all reverted. Time the
+instrument before trusting the measurement: any delay loop must be validated with
+`time` once, and wall-clock pacing should come from `python3 -c "import time;
+time.sleep(N)"` or timestamps, never from a command whose duration depends on the
+network being broken.

@@ -17,6 +17,7 @@ mod multistatic_bridge;
 pub mod pose;
 mod rvf_container;
 mod rvf_pipeline;
+mod throughnet;
 mod tracker_bridge;
 pub mod types;
 mod vital_signs;
@@ -1005,6 +1006,11 @@ struct AppStateInner {
     pub(crate) dedup_factor: f64,
     /// Data directory for persisting runtime config (parent of `firmware_dir`).
     pub(crate) data_dir: std::path::PathBuf,
+    // ── ThroughNet Phase 2: validated presence/motion detectors ─────────────
+    /// Per-node windowed-profile detectors (gate-run-#2 observable family).
+    throughnet: HashMap<u8, throughnet::LinkDetector>,
+    /// In-progress empty-room baseline capture (None = not capturing).
+    throughnet_capture: Option<HashMap<u8, throughnet::BaselineCapture>>,
 }
 
 /// If no ESP32 frame arrives within this duration, source reverts to offline.
@@ -4485,6 +4491,99 @@ async fn calibration_status(State(state): State<SharedState>) -> Json<serde_json
     }
 }
 
+// ── ThroughNet Phase 2: baseline + status endpoints ─────────────────────────
+
+/// POST /api/v1/throughnet/baseline/start — begin an empty-room baseline capture.
+async fn throughnet_baseline_start(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    s.throughnet_capture = Some(HashMap::new());
+    Json(serde_json::json!({
+        "success": true,
+        "message": "Baseline capture started — keep the room EMPTY, then call \
+                    /api/v1/throughnet/baseline/stop after ~20-30 s.",
+    }))
+}
+
+/// POST /api/v1/throughnet/baseline/stop — finalize and install per-node baselines.
+async fn throughnet_baseline_stop(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let mut s = state.write().await;
+    let Some(captures) = s.throughnet_capture.take() else {
+        return Json(serde_json::json!({
+            "success": false,
+            "error": "No capture in progress — call /throughnet/baseline/start first.",
+        }));
+    };
+    let mut results = serde_json::Map::new();
+    let mut any_ok = false;
+    for (node, cap) in captures {
+        let frames = cap.frame_count();
+        match cap.finalize() {
+            Ok(b) => {
+                let windows = b.n_windows;
+                s.throughnet.entry(node).or_default().baseline = Some(b);
+                any_ok = true;
+                results.insert(
+                    node.to_string(),
+                    serde_json::json!({"success": true, "frames": frames, "windows": windows}),
+                );
+            }
+            Err(e) => {
+                results.insert(
+                    node.to_string(),
+                    serde_json::json!({"success": false, "frames": frames, "error": e}),
+                );
+            }
+        }
+    }
+    Json(serde_json::json!({"success": any_ok, "nodes": results}))
+}
+
+/// GET /api/v1/throughnet/status — per-node + fused presence/motion state.
+async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let s = state.read().await;
+    let mut nodes = serde_json::Map::new();
+    let mut any_present = false;
+    let mut any_moving = false;
+    let mut have_scores = false;
+    for (node, det) in s.throughnet.iter() {
+        let present = det.present();
+        let moving = det.moving();
+        if let Some(p) = present {
+            have_scores = true;
+            any_present |= p;
+        }
+        if let Some(m) = moving {
+            any_moving |= m;
+        }
+        nodes.insert(
+            node.to_string(),
+            serde_json::json!({
+                "baseline": det.baseline.is_some(),
+                "baseline_age_s": det.baseline.as_ref().map(|b| b.captured_at.elapsed().as_secs()),
+                "presence_score": det.presence_score,
+                "motion_score": det.motion_score,
+                "present": present,
+                "moving": moving,
+                "last_update_ms": det.last_update.map(|t| t.elapsed().as_millis() as u64),
+            }),
+        );
+    }
+    let fused = if !have_scores {
+        "no_baseline_or_data"
+    } else if any_present && any_moving {
+        "present_moving"
+    } else if any_present {
+        "present_still"
+    } else {
+        "absent"
+    };
+    Json(serde_json::json!({
+        "state": fused,
+        "nodes": nodes,
+        "capturing_baseline": s.throughnet_capture.is_some(),
+    }))
+}
+
 /// Generate a simple timestamp string (epoch seconds) for recording IDs.
 fn chrono_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -5254,6 +5353,20 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                     s.frame_history.push_back(frame.amplitudes.clone());
                     if s.frame_history.len() > FRAME_HISTORY_CAPACITY {
                         s.frame_history.pop_front();
+                    }
+
+                    // ThroughNet Phase 2: feed the validated presence/motion
+                    // detector (and the baseline capture when one is running).
+                    // Placed before the per-node `node_states` borrow below.
+                    {
+                        let tn_node = frame.node_id;
+                        if let Some(cap) = s.throughnet_capture.as_mut() {
+                            cap.entry(tn_node).or_default().push_frame(&frame.amplitudes);
+                        }
+                        s.throughnet
+                            .entry(tn_node)
+                            .or_default()
+                            .push_frame(&frame.amplitudes);
                     }
 
                     // ThroughNet fix: feed the field model during calibration from the
@@ -6763,6 +6876,9 @@ async fn main() {
         // ADR-044 §5.3: runtime-configurable dedup factor (persisted).
         dedup_factor: runtime_config.dedup_factor,
         data_dir: data_dir.clone(),
+        // ThroughNet Phase 2
+        throughnet: HashMap::new(),
+        throughnet_capture: None,
     }));
 
     // Start background tasks based on source
@@ -6927,6 +7043,10 @@ async fn main() {
         .route("/api/v1/calibration/start", post(calibration_start))
         .route("/api/v1/calibration/stop", post(calibration_stop))
         .route("/api/v1/calibration/status", get(calibration_status))
+        // ThroughNet Phase 2: validated presence/motion detector
+        .route("/api/v1/throughnet/baseline/start", post(throughnet_baseline_start))
+        .route("/api/v1/throughnet/baseline/stop", post(throughnet_baseline_stop))
+        .route("/api/v1/throughnet/status", get(throughnet_status))
         // ADR-044 §5.3: runtime-configurable dedup factor
         .route(
             "/api/v1/config/dedup-factor",
