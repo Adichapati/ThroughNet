@@ -85,6 +85,16 @@ Acceptance test (scripted):
 ### Phase 2 — Detection pipeline (server-side, on clean input)
 *Goal: presence / motion / breathing with measured accuracy.*
 
+**Reuse-first rule:** the inherited `wifi-densepose-signal` crate already implements
+most of the DSP this phase needs — wire it to the clean TX/RX input instead of
+rewriting: `csi_ratio.rs` (conjugate multiplication — cancels CFO/SFO; the proper
+phase observable), `subcarrier_selection.rs` (variance-ratio top-K), `hampel.rs`,
+`phase_sanitizer.rs`, `hardware_norm.rs`; `wifi-densepose-vitals` for breathing/HR
+extraction; the server's `/api/v1/recording/*` API for the validation harness.
+Gate run #1 (tools/gate/) proved the feature family: per-frame RMS normalization +
+valid-bin selection + **windowed profile dynamics** (presence = profile shift vs
+empty baseline, 3.6×–9.1×; motion = window-to-window profile rate).
+
 1. **Per-link processing**: amplitude normalization (subcarrier ratios cancel AGC),
    Hampel outlier removal, phase sanitization (already in `wifi-densepose-signal`).
 2. **Presence** = deviation from empty-room baseline (the calibration we fixed) with
@@ -127,9 +137,16 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 ### Phase 4 — Product app & packaging
 *Goal: it looks and feels like a product, not a research repo.*
 
-1. **Clean dashboard** (replace/simplify Observatory): presence / motion / breathing
-   cards with confidence, node health (per-link pps, RSSI), calibration status &
-   one-click recalibrate, event log (entered/left/still/moving). Honest empty states.
+1. **Full UI overhaul — the inherited `ui/` is demo-ware and gets replaced, not
+   patched.** The Observatory's skeleton/heatmap theatrics are decoration driven by
+   heuristics; the product UI shows only what's real. New app: presence / motion /
+   breathing cards with confidence, node health (per-link pps + link RSSI), TX/RX
+   topology view, calibration status & one-click recalibrate, event log
+   (entered/left/still/moving), honest empty/degraded states. Stack: adopt the
+   tooling pattern already proven in the inherited `dashboard/` (Vite + Lit +
+   TypeScript + Playwright/axe tests) but build our screens from scratch, driven by
+   `/ws/sensing` + the Phase-2 endpoints. Pose visualization returns only if/when
+   Phase 5's pose track produces a real model.
 2. **Single deliverable**: one server binary with embedded UI assets (rust-embed), or
    docker-compose for the container crowd; systemd unit for always-on.
 3. **Repo slimming**: define the product surface — firmware + sensing-server + UI +
@@ -143,6 +160,16 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 - **Learned detectors**: Phase 2's harness produces labeled recordings → train a small
   classifier (logistic regression / tiny CNN on spectrograms) to replace hand
   thresholds; more robust across rooms. This makes upstream's "self-learning" claim real.
+- **Pose / limb-movement track** (upgraded from "out of scope" — assets exist):
+  research models that predict limb/arm movement from CSI are real, and the inherited
+  tree ships its own: `ruvnet/wifi-densepose-mmfi-pose` on HuggingFace (17-keypoint),
+  the `cog-pose-estimation` crate to run it, the full `wifi-densepose-train` pipeline,
+  and ADR-079's camera-supervised fine-tune design. **Honest caveat:** those weights
+  are trained on MM-Fi research hardware (multi-antenna NICs, 114 subcarriers, high
+  rate) — a large domain gap from a single-antenna ESP32 at ~40 fps. Path: (a) coarse
+  limb/gesture classes from our own labeled recordings first, (b) full skeleton only
+  via camera-assisted fine-tuning on our hardware (ADR-079). Do not block the core
+  product on this.
 - **Heart rate**: borderline on this hardware; attempt only with the controlled-link
   SNR, market as experimental.
 - **Zones / rough localization**: TDM-rotate the TX role (each board takes turns
@@ -150,6 +177,28 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 - **Home Assistant integration**: MQTT publisher exists upstream; wire it to our
   *reliable* presence/motion/breathing only.
 - **Multi-person**: explicitly out of scope until single-person is solid.
+
+## 4b. Repo hygiene & CI policy
+- The 22 inherited RuView GitHub workflows + dependabot config were **removed**
+  (2026-06-12) — they ran on every push to this independent repo, failed, and
+  spammed notifications (one was even cron-scheduled).
+- ThroughNet gets its **own minimal CI** in Phase 3/4: firmware Docker build +
+  size gate, sensing-server `cargo build` + tests, gate-tool lint. Nothing more
+  until the product surface stabilizes.
+
+## 4c. Inherited-asset inventory (audited 2026-06-12)
+| Asset | Where | Use in ThroughNet |
+|---|---|---|
+| CSI-ratio (CFO/SFO cancel) | `v2/.../signal/src/csi_ratio.rs` | Phase 2 phase observable |
+| Subcarrier top-K (variance ratio) | `.../subcarrier_selection.rs` | Phase 2 (replaces gate-tool hand-roll) |
+| Hampel, phase sanitizer, hardware norm | `signal/src/` | Phase 2 preprocessing |
+| Breathing / heart-rate extractors | `v2/crates/wifi-densepose-vitals` | Phase 2 vitals |
+| Recording API | sensing-server `/api/v1/recording/*` | Phase 2 validation harness |
+| MQTT + Home Assistant publisher | server `--mqtt-*`, `homecore-*`, ADR-115 | Phase 5 HA |
+| Training pipeline (losses/eval/domain) | `v2/crates/wifi-densepose-train` | Phase 5 learned detectors |
+| Pose model + runner + fine-tune design | HF `mmfi-pose`, `cog-pose-estimation`, ADR-079 | Phase 5 pose track |
+| Vite+Lit+TS+Playwright tooling pattern | `dashboard/` (nvsim app) | Phase 4 UI rebuild template |
+| Field-model calibration (we fixed it) | `sensing-server` + `ruvsense/field_model` | Phase 2 occupancy |
 
 ## 5. Honest feasibility tiers
 | Capability | Verdict | Basis |
