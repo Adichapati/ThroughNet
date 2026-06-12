@@ -37,6 +37,7 @@
 #include "c6_timesync.h"           /* ADR-110: 802.15.4 mesh time-sync (no-op on S3) */
 #include "c6_lp_core.h"            /* ADR-110: LP-core hibernation (no-op on S3) */
 #include "c6_sync_espnow.h"        /* ADR-110 D1 workaround: ESP-NOW sync */
+#include "tx_beacon.h"             /* ThroughNet Phase 1: role=tx beacon illuminator */
 #include "c6_softap_he.h"          /* ADR-110 B1/B2: HE/TWT soft-AP (no-op when disabled) */
 #ifdef CONFIG_CSI_MOCK_ENABLED
 #include "mock_csi.h"
@@ -225,6 +226,29 @@ void app_main(void)
     ESP_LOGI(TAG, "Mock CSI mode: skipping WiFi init (CONFIG_CSI_MOCK_SKIP_WIFI_CONNECT)");
 #endif
 
+    /* ── ThroughNet Phase 1: role=tx — pure beacon illuminator ────────────
+     * The TX node transmits fixed-rate OFDM frames for the RX nodes to
+     * measure. It does NOT capture CSI, run edge DSP, or join the ESP-NOW
+     * sync mesh (the beacon itself replaces it). OTA stays up for remote
+     * management. ROADMAP.md §3 / Phase 1. */
+#ifndef CONFIG_CSI_MOCK_SKIP_WIFI_CONNECT
+    if (g_nvs_config.node_role == NVS_ROLE_TX) {
+        httpd_handle_t tx_ota_server = NULL;
+        if (ota_update_init_ex(&tx_ota_server) != ESP_OK) {
+            ESP_LOGW(TAG, "ROLE=TX: OTA server init failed (continuing)");
+        }
+        esp_err_t tb_ret = tx_beacon_init(g_nvs_config.beacon_hz, g_nvs_config.node_id);
+        if (tb_ret != ESP_OK) {
+            ESP_LOGE(TAG, "ROLE=TX: tx_beacon_init failed: %s — node is idle!",
+                     esp_err_to_name(tb_ret));
+        }
+        ESP_LOGI(TAG, "ROLE=TX beacon illuminator — CSI capture/edge DSP/sync mesh disabled");
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(10000));
+        }
+    }
+#endif
+
     /* Initialize UDP sender with runtime target */
 #ifdef CONFIG_CSI_MOCK_SKIP_WIFI_CONNECT
     ESP_LOGI(TAG, "Mock CSI mode: skipping UDP sender init (no network)");
@@ -272,10 +296,17 @@ void app_main(void)
      * both S3 and C6 — replaces the broken 802.15.4 RX path in c6_timesync.
      * Skip on QEMU mock (no real WiFi → no ESP-NOW). */
 #ifndef CONFIG_CSI_MOCK_SKIP_WIFI_CONNECT
-    esp_err_t espnow_ret = c6_sync_espnow_init();
-    if (espnow_ret != ESP_OK) {
-        ESP_LOGW(TAG, "c6_sync_espnow_init failed: %s (continuing without ESP-NOW sync)",
-                 esp_err_to_name(espnow_ret));
+    if (g_nvs_config.node_role == NVS_ROLE_RX) {
+        /* ThroughNet Phase 1: RX nodes are radio-silent — no ESP-NOW sync
+         * beacons (their 10 Hz chatter pollutes the very CSI we measure).
+         * Cross-node alignment comes from the TX beacon's sequence numbers. */
+        ESP_LOGI(TAG, "ROLE=RX: ESP-NOW sync disabled (radio-silent receiver)");
+    } else {
+        esp_err_t espnow_ret = c6_sync_espnow_init();
+        if (espnow_ret != ESP_OK) {
+            ESP_LOGW(TAG, "c6_sync_espnow_init failed: %s (continuing without ESP-NOW sync)",
+                     esp_err_to_name(espnow_ret));
+        }
     }
 #endif
 
@@ -421,7 +452,13 @@ void app_main(void)
 #else
     bool has_display = false;                 /* display support not compiled in */
 #endif
-    if (!has_display) {
+    if (g_nvs_config.node_role == NVS_ROLE_RX) {
+        /* ThroughNet Phase 1: RX nodes keep the MGMT-only filter. The TX
+         * beacon is an ESP-NOW action frame (management type), so it passes
+         * MGMT — and skipping DATA frames cuts interrupt load and ambient
+         * noise that the MAC filter would discard anyway. */
+        ESP_LOGI(TAG, "ROLE=RX: keeping MGMT-only filter (beacon frames are MGMT)");
+    } else if (!has_display) {
         csi_collector_enable_data_capture();
     }
 

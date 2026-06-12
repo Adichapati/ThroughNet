@@ -593,8 +593,20 @@ void csi_collector_init(void)
 
     /* RuView#521/#954: start the connected-STA traffic source so the CSI engine
      * receives a guaranteed OFDM unicast floor even when promiscuous capture is
-     * starved (display builds / quiet networks). Additive to #396/#893. */
-    csi_start_self_ping();
+     * starved (display builds / quiet networks). Additive to #396/#893.
+     *
+     * ThroughNet Phase 1: SKIPPED for role=rx — the gateway self-ping is RF
+     * chatter that pollutes the controlled TX-beacon link the RX measures.
+     * RX nodes rely exclusively on the MAC-filtered beacon stream. */
+    if (g_nvs_config.node_role == NVS_ROLE_RX) {
+        ESP_LOGI(TAG, "ROLE=RX: self-ping disabled (radio-silent receiver)");
+        if (!s_filter_mac_set) {
+            ESP_LOGW(TAG, "ROLE=RX but no filter_mac set — capturing ALL ambient "
+                     "traffic. Provision with --filter-mac <TX node MAC>.");
+        }
+    } else {
+        csi_start_self_ping();
+    }
 }
 
 /* Accessor for other modules that need the authoritative runtime node_id. */

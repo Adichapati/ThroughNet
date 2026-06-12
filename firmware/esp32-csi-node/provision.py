@@ -73,6 +73,8 @@ CONFIG_VALUE_CHECKS = [
     ("subk_count", lambda value: value is not None),
     ("channel", lambda value: value is not None),
     ("filter_mac", lambda value: value is not None),
+    ("role", lambda value: value is not None),
+    ("beacon_hz", lambda value: value is not None),
     ("hop_channels", lambda value: value is not None),
     ("seed_url", lambda value: value is not None),
     ("seed_token", lambda value: value is not None),
@@ -106,6 +108,7 @@ MERGEABLE_ATTRS = [
     "edge_tier", "pres_thresh", "fall_thresh",
     "vital_win", "vital_int", "subk_count",
     "channel", "filter_mac",
+    "role", "beacon_hz",
     "hop_channels", "hop_dwell",
     "seed_url", "seed_token", "zone", "swarm_hb", "swarm_ingest",
 ]
@@ -215,6 +218,12 @@ def build_nvs_csv(args):
         mac_bytes = bytes(int(b, 16) for b in args.filter_mac.split(":"))
         # NVS blob: write as hex-encoded string for CSV compatibility
         writer.writerow(["filter_mac", "data", "hex2bin", mac_bytes.hex()])
+    # ThroughNet Phase 1: TX/RX bistatic roles
+    if args.role is not None:
+        role_map = {"legacy": 0, "tx": 1, "rx": 2}
+        writer.writerow(["node_role", "data", "u8", str(role_map[args.role])])
+    if args.beacon_hz is not None:
+        writer.writerow(["beacon_hz", "data", "u16", str(args.beacon_hz)])
     # ADR-073: Multi-frequency channel hopping
     if args.hop_channels is not None:
         channels = [int(c.strip()) for c in args.hop_channels.split(",")]
@@ -343,6 +352,13 @@ def main():
     parser.add_argument("--channel", type=int, help="CSI channel (1-14 for 2.4GHz, 36-177 for 5GHz). "
                         "Overrides auto-detection from connected AP.")
     parser.add_argument("--filter-mac", type=str, help="MAC address to filter CSI frames (AA:BB:CC:DD:EE:FF)")
+    # ThroughNet Phase 1: TX/RX bistatic roles
+    parser.add_argument("--role", choices=["tx", "rx", "legacy"],
+                        help="Node role: tx = fixed-rate OFDM beacon illuminator (no CSI capture); "
+                        "rx = radio-silent receiver (pair with --filter-mac <TX MAC>); "
+                        "legacy = upstream ambient-sniffer behavior (default)")
+    parser.add_argument("--beacon-hz", type=int,
+                        help="TX beacon rate in Hz, 1-200 (default 100; only used when --role tx)")
     # ADR-073: Multi-frequency channel hopping
     parser.add_argument("--hop-channels", type=str, help="Comma-separated channel list for hopping (e.g. '1,6,11')")
     parser.add_argument("--hop-dwell", type=int, default=200, help="Dwell time per channel in ms (default: 200)")
@@ -438,6 +454,14 @@ def main():
         except ValueError:
             parser.error(f"--filter-mac contains invalid hex bytes: '{args.filter_mac}'")
 
+    # ThroughNet Phase 1: role sanity checks
+    if args.beacon_hz is not None and not (1 <= args.beacon_hz <= 200):
+        parser.error(f"--beacon-hz must be 1-200, got {args.beacon_hz}")
+    if args.role == "rx" and args.filter_mac is None:
+        print("WARNING: --role rx without --filter-mac — the receiver will capture ALL "
+              "ambient traffic instead of just the TX beacon. Pass --filter-mac <TX MAC>.",
+              file=sys.stderr)
+
     print("Building NVS configuration:")
     if args.ssid:
         print(f"  WiFi SSID:     {args.ssid}")
@@ -468,6 +492,12 @@ def main():
         print(f"  CSI Channel:   {args.channel}")
     if args.filter_mac is not None:
         print(f"  Filter MAC:    {args.filter_mac}")
+    if args.role is not None:
+        role_desc = {"tx": "TX beacon illuminator", "rx": "RX radio-silent receiver",
+                     "legacy": "legacy ambient sniffer"}
+        print(f"  Role:          {args.role} ({role_desc[args.role]})")
+    if args.beacon_hz is not None:
+        print(f"  Beacon Rate:   {args.beacon_hz} Hz")
     if args.seed_url is not None:
         print(f"  Seed URL:      {args.seed_url}")
     if args.zone is not None:

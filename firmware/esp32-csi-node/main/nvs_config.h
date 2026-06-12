@@ -21,6 +21,11 @@
 /** Maximum channels in the hop list (must match CSI_HOP_CHANNELS_MAX). */
 #define NVS_CFG_HOP_MAX      6
 
+/** ThroughNet Phase 1 — bistatic node roles (ROADMAP.md §3). */
+#define NVS_ROLE_LEGACY  0   /**< Upstream behavior: ambient sniffer + self-ping + ESP-NOW sync. */
+#define NVS_ROLE_TX      1   /**< Beacon illuminator: fixed-rate OFDM ESP-NOW TX, no CSI capture. */
+#define NVS_ROLE_RX      2   /**< Radio-silent receiver: MAC-filtered CSI, no self-ping/ESP-NOW. */
+
 /** Runtime configuration loaded from NVS or Kconfig defaults. */
 typedef struct {
     char     wifi_ssid[NVS_CFG_SSID_MAX];
@@ -55,6 +60,10 @@ typedef struct {
     uint8_t  csi_channel;                    /**< Explicit CSI channel override (0 = auto-detect). */
     uint8_t  filter_mac[6];                  /**< MAC address to filter CSI frames. */
     uint8_t  filter_mac_set;                 /**< 1 if filter_mac was loaded from NVS. */
+
+    /* ThroughNet Phase 1: TX/RX bistatic roles */
+    uint8_t  node_role;                      /**< NVS_ROLE_LEGACY / NVS_ROLE_TX / NVS_ROLE_RX. */
+    uint16_t beacon_hz;                      /**< TX beacon rate in Hz (default 100; RX gate caps processing at 50). */
 
     /* ADR-066: Swarm bridge configuration */
     char     seed_url[64];                /**< Cognitum Seed base URL (empty = disabled). */

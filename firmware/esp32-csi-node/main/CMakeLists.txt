@@ -15,6 +15,8 @@ set(SRCS
     "c6_lp_core.c"
     # ADR-110 D1 workaround — ESP-NOW cross-node sync (works on S3+C6)
     "c6_sync_espnow.c"
+    # ThroughNet Phase 1 — fixed-rate OFDM beacon illuminator (role=tx)
+    "tx_beacon.c"
     # ADR-110 B1/B2 unblock — soft-AP HE/TWT (C6-only when enabled)
     "c6_softap_he.c"
 )

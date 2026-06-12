@@ -96,6 +96,10 @@ void nvs_config_load(nvs_config_t *cfg)
     cfg->filter_mac_set = 0;
     memset(cfg->filter_mac, 0, 6);
 
+    /* ThroughNet Phase 1: role defaults — legacy sniffer unless provisioned. */
+    cfg->node_role = NVS_ROLE_LEGACY;
+    cfg->beacon_hz = 100;  /* saturates the RX 50 Hz process gate for a steady rate */
+
     /* Try to override from NVS */
     nvs_handle_t handle;
     esp_err_t err = nvs_open("csi_cfg", NVS_READONLY, &handle);
@@ -300,6 +304,28 @@ void nvs_config_load(nvs_config_t *cfg)
         ESP_LOGI(TAG, "NVS override: filter_mac=%02x:%02x:%02x:%02x:%02x:%02x",
                  cfg->filter_mac[0], cfg->filter_mac[1], cfg->filter_mac[2],
                  cfg->filter_mac[3], cfg->filter_mac[4], cfg->filter_mac[5]);
+    }
+
+    /* ThroughNet Phase 1: node role + beacon rate. */
+    uint8_t role_val;
+    if (nvs_get_u8(handle, "node_role", &role_val) == ESP_OK) {
+        if (role_val <= NVS_ROLE_RX) {
+            cfg->node_role = role_val;
+            ESP_LOGI(TAG, "NVS override: node_role=%u (%s)", (unsigned)cfg->node_role,
+                     cfg->node_role == NVS_ROLE_TX ? "TX beacon" :
+                     cfg->node_role == NVS_ROLE_RX ? "RX silent" : "legacy");
+        } else {
+            ESP_LOGW(TAG, "NVS node_role=%u invalid, using legacy", (unsigned)role_val);
+        }
+    }
+    uint16_t beacon_hz_val;
+    if (nvs_get_u16(handle, "beacon_hz", &beacon_hz_val) == ESP_OK) {
+        if (beacon_hz_val >= 1 && beacon_hz_val <= 200) {
+            cfg->beacon_hz = beacon_hz_val;
+            ESP_LOGI(TAG, "NVS override: beacon_hz=%u", cfg->beacon_hz);
+        } else {
+            ESP_LOGW(TAG, "NVS beacon_hz=%u out of range [1..200], ignored", beacon_hz_val);
+        }
     }
 
     /* ADR-066: Swarm bridge */
