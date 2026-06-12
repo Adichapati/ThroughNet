@@ -47,3 +47,26 @@ high presence/high motion. **Phase 1 closed — these feature definitions are th
 Phase-2 implementation spec.** Placement matters enormously: the same room failed
 the gate at -45 dBm (link too short) and -71→-80 dBm (link too weak); the
 link_meter.py tool exists precisely to dial this in (-50..-65 target).
+
+## Results 2026-06-12 (Phase-2 live validation — server-side detector) — **PASSED**
+
+Same locked geometry, whole fleet BSSID-locked (CORRECTIONS #12). Detector =
+`throughnet.rs` in the sensing-server, fed live on UDP 5005 (540-560
+frames/node per 15 s window, every window, no workarounds). Protocol: 60 s
+empty-room baseline via `POST /api/v1/throughnet/baseline/start|stop`
+(2185/2216 frames, 28 windows per node), then live cues polled from
+`GET /api/v1/throughnet/status` every 4 s:
+
+| cue | fused state | presence (n2 / n3) | motion (n2 / n3) |
+|---|---|---|---|
+| empty | `absent` (3/3 polls) | 0.9-1.2× / 1.0-1.2× | 0.9-1.2× / 0.9-1.3× |
+| still | `present_still` (2/4)* | 39-42× / 45-48× | 1.6-2.3× / 1.0-1.3× |
+| walking | `present_moving` (4/4) | 27-56× / 6.7-8.4× | **18.9-27.5×** / 1.7-6.0× |
+
+\* the two `present_moving` polls during "still" were the walk-in transient
+(first poll) and a weight-shift on the hot -52 dBm link (last poll). The raw
+scores are correct; the state machine needs **debounce** (require ~2
+consecutive windows to flip state) — queued for Phase-2 polish alongside the
+validation harness. Per-link geometry is visible as designed: the walking path
+crossed node 2's link line, so n2 carried the motion signal while n3 stayed
+near baseline.
