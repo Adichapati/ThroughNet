@@ -105,3 +105,21 @@ Upstream action: document the Linux rule alongside the Windows one.
 
 Result: calibration reaches `Fresh` (verified: 1861 frames, eigenvalue-based occupancy).
 Caveat: needs traffic on the channel to keep CSI yield up during collection (see #7).
+
+## 10. 🔴✅ Multi-unit mesh steering breaks the TX/RX link (BSSID lock added)
+
+On a Google WiFi 3-unit mesh, a node can be steered to a **different mesh unit on a
+different channel** (observed: RX re-associated to `…62:e4:45` on ch6 at -75 dBm while
+the TX beacons on ch1 via `…63:f2:33`) — making the receiver permanently deaf to the
+beacons regardless of distance. Fix: new `lock_bssid` NVS key + `--lock-bssid` flag
+pins association (and therefore channel). Product implication: the setup tool must
+auto-detect the TX's BSSID/channel and lock all RX nodes to match; `doctor` must
+check all nodes share a channel.
+
+## 11. 🟡 provision.py per-port state merges the WRONG board's settings
+
+The additive-merge state file is keyed by **serial port**, not by board identity.
+Provisioning board B on the same port where board A was last provisioned silently
+re-applies A's keys (observed: board 2 inherited `node_id=3`). Workaround: always
+pass the full identity flags, or `--reset`. Proper fix: key the state by the chip's
+MAC (esptool read-mac) instead of the port path.

@@ -99,6 +99,8 @@ void nvs_config_load(nvs_config_t *cfg)
     /* ThroughNet Phase 1: role defaults — legacy sniffer unless provisioned. */
     cfg->node_role = NVS_ROLE_LEGACY;
     cfg->beacon_hz = 100;  /* saturates the RX 50 Hz process gate for a steady rate */
+    cfg->lock_bssid_set = 0;
+    memset(cfg->lock_bssid, 0, 6);
 
     /* Try to override from NVS */
     nvs_handle_t handle;
@@ -326,6 +328,20 @@ void nvs_config_load(nvs_config_t *cfg)
         } else {
             ESP_LOGW(TAG, "NVS beacon_hz=%u out of range [1..200], ignored", beacon_hz_val);
         }
+    }
+
+    /* ThroughNet Phase 1: BSSID lock — pins association to one mesh unit so
+     * every node sits on the TX beacon's channel. Without this, multi-unit
+     * meshes (e.g. Google WiFi) can steer an RX onto a different channel
+     * where it can never hear the beacons. */
+    size_t bssid_len = 6;
+    if (nvs_get_blob(handle, "lock_bssid", cfg->lock_bssid, &bssid_len) == ESP_OK
+        && bssid_len == 6)
+    {
+        cfg->lock_bssid_set = 1;
+        ESP_LOGI(TAG, "NVS override: lock_bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+                 cfg->lock_bssid[0], cfg->lock_bssid[1], cfg->lock_bssid[2],
+                 cfg->lock_bssid[3], cfg->lock_bssid[4], cfg->lock_bssid[5]);
     }
 
     /* ADR-066: Swarm bridge */

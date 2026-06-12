@@ -111,6 +111,19 @@ static void wifi_init_sta(void)
     strncpy((char *)wifi_config.sta.ssid, g_nvs_config.wifi_ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char *)wifi_config.sta.password, g_nvs_config.wifi_password, sizeof(wifi_config.sta.password) - 1);
 
+    /* ThroughNet Phase 1: BSSID lock. Multi-unit meshes (Google WiFi etc.)
+     * can steer a node to a unit on a different channel than the TX beacon,
+     * making it deaf to the beacons forever. Pinning the BSSID keeps every
+     * node on the same mesh unit = same channel as the TX. */
+    if (g_nvs_config.lock_bssid_set) {
+        wifi_config.sta.bssid_set = true;
+        memcpy(wifi_config.sta.bssid, g_nvs_config.lock_bssid, 6);
+        ESP_LOGI(TAG, "BSSID locked to %02x:%02x:%02x:%02x:%02x:%02x (mesh channel pinning)",
+                 g_nvs_config.lock_bssid[0], g_nvs_config.lock_bssid[1],
+                 g_nvs_config.lock_bssid[2], g_nvs_config.lock_bssid[3],
+                 g_nvs_config.lock_bssid[4], g_nvs_config.lock_bssid[5]);
+    }
+
     /* If password is empty, use open auth */
     if (strlen((char *)wifi_config.sta.password) == 0) {
         wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;

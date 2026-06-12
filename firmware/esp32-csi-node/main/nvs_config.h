@@ -64,6 +64,9 @@ typedef struct {
     /* ThroughNet Phase 1: TX/RX bistatic roles */
     uint8_t  node_role;                      /**< NVS_ROLE_LEGACY / NVS_ROLE_TX / NVS_ROLE_RX. */
     uint16_t beacon_hz;                      /**< TX beacon rate in Hz (default 100; RX gate caps processing at 50). */
+    uint8_t  lock_bssid[6];                  /**< Pin STA association to this BSSID (multi-unit mesh:
+                                                  keeps every node on the TX's channel). */
+    uint8_t  lock_bssid_set;                 /**< 1 if lock_bssid was loaded from NVS. */
 
     /* ADR-066: Swarm bridge configuration */
     char     seed_url[64];                /**< Cognitum Seed base URL (empty = disabled). */

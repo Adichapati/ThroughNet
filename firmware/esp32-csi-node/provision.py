@@ -75,6 +75,7 @@ CONFIG_VALUE_CHECKS = [
     ("filter_mac", lambda value: value is not None),
     ("role", lambda value: value is not None),
     ("beacon_hz", lambda value: value is not None),
+    ("lock_bssid", lambda value: value is not None),
     ("hop_channels", lambda value: value is not None),
     ("seed_url", lambda value: value is not None),
     ("seed_token", lambda value: value is not None),
@@ -108,7 +109,7 @@ MERGEABLE_ATTRS = [
     "edge_tier", "pres_thresh", "fall_thresh",
     "vital_win", "vital_int", "subk_count",
     "channel", "filter_mac",
-    "role", "beacon_hz",
+    "role", "beacon_hz", "lock_bssid",
     "hop_channels", "hop_dwell",
     "seed_url", "seed_token", "zone", "swarm_hb", "swarm_ingest",
 ]
@@ -224,6 +225,9 @@ def build_nvs_csv(args):
         writer.writerow(["node_role", "data", "u8", str(role_map[args.role])])
     if args.beacon_hz is not None:
         writer.writerow(["beacon_hz", "data", "u16", str(args.beacon_hz)])
+    if args.lock_bssid is not None:
+        bssid_bytes = bytes(int(b, 16) for b in args.lock_bssid.split(":"))
+        writer.writerow(["lock_bssid", "data", "hex2bin", bssid_bytes.hex()])
     # ADR-073: Multi-frequency channel hopping
     if args.hop_channels is not None:
         channels = [int(c.strip()) for c in args.hop_channels.split(",")]
@@ -359,6 +363,9 @@ def main():
                         "legacy = upstream ambient-sniffer behavior (default)")
     parser.add_argument("--beacon-hz", type=int,
                         help="TX beacon rate in Hz, 1-200 (default 100; only used when --role tx)")
+    parser.add_argument("--lock-bssid", type=str,
+                        help="Pin WiFi association to this BSSID (AA:BB:CC:DD:EE:FF). Use on "
+                        "multi-unit meshes so every node stays on the TX beacon's channel.")
     # ADR-073: Multi-frequency channel hopping
     parser.add_argument("--hop-channels", type=str, help="Comma-separated channel list for hopping (e.g. '1,6,11')")
     parser.add_argument("--hop-dwell", type=int, default=200, help="Dwell time per channel in ms (default: 200)")
@@ -457,6 +464,16 @@ def main():
     # ThroughNet Phase 1: role sanity checks
     if args.beacon_hz is not None and not (1 <= args.beacon_hz <= 200):
         parser.error(f"--beacon-hz must be 1-200, got {args.beacon_hz}")
+    if args.lock_bssid is not None:
+        parts = args.lock_bssid.split(":")
+        if len(parts) != 6 or any(len(p) == 0 or len(p) > 2 for p in parts):
+            parser.error(f"--lock-bssid must be AA:BB:CC:DD:EE:FF, got '{args.lock_bssid}'")
+        try:
+            for p in parts:
+                if not (0 <= int(p, 16) <= 255):
+                    raise ValueError
+        except ValueError:
+            parser.error(f"--lock-bssid contains invalid hex bytes: '{args.lock_bssid}'")
     if args.role == "rx" and args.filter_mac is None:
         print("WARNING: --role rx without --filter-mac — the receiver will capture ALL "
               "ambient traffic instead of just the TX beacon. Pass --filter-mac <TX MAC>.",
@@ -498,6 +515,8 @@ def main():
         print(f"  Role:          {args.role} ({role_desc[args.role]})")
     if args.beacon_hz is not None:
         print(f"  Beacon Rate:   {args.beacon_hz} Hz")
+    if args.lock_bssid is not None:
+        print(f"  Lock BSSID:    {args.lock_bssid}")
     if args.seed_url is not None:
         print(f"  Seed URL:      {args.seed_url}")
     if args.zone is not None:
