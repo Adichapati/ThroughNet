@@ -1,0 +1,35 @@
+ThroughNet
+Copyright (c) 2026 Adithya Raj
+
+================================================================================
+Attribution
+================================================================================
+
+ThroughNet is derived from and builds upon:
+
+    RuView / WiFi-DensePose
+    Copyright (c) ruvnet
+    https://github.com/ruvnet/RuView
+    Licensed under the MIT License.
+
+The complete, unmodified upstream README is preserved in this repository as
+UPSTREAM-RUVIEW-README.md. The original MIT license text is retained in LICENSE
+and continues to apply to all code inherited from RuView.
+
+================================================================================
+Summary of ThroughNet modifications
+================================================================================
+
+(Tracked in detail in CORRECTIONS.md.)
+
+- Rebuilt the ESP32-S3 node firmware with the display compiled out, fixing a
+  zero-CSI (yield=0pps) failure on headless ESP32-S3 DevKitC boards, where the
+  shipped binaries stayed in MGMT-only promiscuous mode and never produced CSI.
+- Corrected the firmware build toolchain from ESP-IDF v5.2 (as documented
+  upstream, which fails on the current source) to v5.4.
+- Added a display-off build config fragment (firmware/esp32-csi-node/
+  sdkconfig.nodisp) and retained a working prebuilt binary set under
+  firmware/esp32-csi-node/release_bins/throughnet-s3-nodisp/.
+- Added CORRECTIONS.md documenting upstream bugs and doc gaps discovered.
+
+This is an evolving fork; further changes are ongoing.
