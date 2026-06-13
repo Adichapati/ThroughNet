@@ -358,6 +358,12 @@ docker run -p 3000:3000 -p 3001:3001 -p 5005:5005/udp -e CSI_SOURCE=esp32 ruvnet
 
 The ESP32 nodes stream binary CSI frames over UDP to port 5005. See [Hardware Setup](#esp32-s3-mesh) for flashing instructions.
 
+> **Host firewall (common gotcha):** if the boards are clearly streaming — their serial logs show `CSI streaming active → <host>:5005` — but the server's `/api/v1/throughnet/status` stays `no_baseline_or_data`, your host firewall is almost certainly dropping the inbound UDP. The frames are *unsolicited inbound* (the boards push to you), so a default-deny firewall silently blocks them while your own outbound traffic (ping/curl to the boards) still works. Open the port to your LAN, e.g. with `ufw`:
+> ```bash
+> sudo ufw allow from 192.168.0.0/16 to any port 5005 proto udp
+> ```
+> Confirm frames are arriving on the wire with `sudo tcpdump -i <iface> -nn udp port 5005`. (`no_baseline_or_data` only means "no baseline captured yet" once frames *are* flowing — capture one via `POST /api/v1/throughnet/baseline/start|stop`.)
+
 ### ESP32 Multistatic Mesh (Advanced)
 
 For higher accuracy with through-wall tracking, deploy 3-6 ESP32-S3 nodes in a **multistatic mesh** configuration. Each node acts as both transmitter and receiver, creating multiple sensing paths through the environment.

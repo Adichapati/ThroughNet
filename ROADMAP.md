@@ -230,19 +230,26 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 presence FP 0%, detection 100%, latency 0 s, motion still-vs-walking 100% — including
 the hardest case (a still subject breathing on a link line). Detection layer is locked.
 Current front:*
-1. **Phase 2.4 — breathing** (detector BUILT + offline-validated 2026-06-13;
-   `breathing.rs`): 0.15–0.5 Hz bandpass → in-band bin selection → DFT spectral peak
-   (interior 0.20–0.45 Hz, parabolic-interpolated) → BPM, prominence confidence,
-   measured-rate, gated on `present_still`, best-link, on `/throughnet/status`. Offline:
-   still subject 18.5 BPM/conf 3.6, empty → unknown. `validate.py --breathing
-   [--breathing-truth N]` added (focused respiratory test, ±2 BPM gate). **Remaining:
-   the live ±2 BPM run with counted/paced breathing** (a strong slow sway leaking near
-   the low edge is the case to probe).
+1. **Phase 2.4 — breathing — VALIDATED ON HARDWARE (2026-06-13).** `breathing.rs`:
+   0.15–0.5 Hz bandpass → in-band bin selection → DFT spectral peak (interior
+   0.20–0.45 Hz, parabolic-interpolated) → BPM, prominence confidence, measured-rate,
+   gated on `present_still`, best-link, on `/throughnet/status`. Offline: still subject
+   18.5 BPM/conf 3.6, empty → unknown. Live ±2 BPM run (paced 15 BPM metronome, 110 s
+   poll, fresh empty-room baseline, 3-node mesh): estimate **15.0 BPM, error 0.0,
+   conf 4.5 → PASS** — 24 post-lock `present_still` readings (range 13.8–16.7), locked
+   to 15.0–15.7 with confidence rising to ~10 over a sustained 30 s window, 0 moving/
+   absent misfires. Best-link picker correctly leaned on the stronger receiver (node 2);
+   the weaker link rarely cleared the confidence floor — a geometry note, not a detector
+   fault. `validate.py --breathing [--breathing-truth N]` is the canonical harness.
 2. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run + `doctor`).
 3. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
-*Done 2026-06-13: state-machine debounce, validation harness (`validate.py`), and the
+*Done 2026-06-13: state-machine debounce, validation harness (`validate.py`), the
 motion observable across three iterations — absolute (failed on still-on-link) →
 relative `motion÷presence` (fixed that, ~85%) → **1–6 Hz motion-band energy** (cascaded
-HP+LP, empty-floor-normalized, OR-fused; rejects breathing/sway; 100% on hardware).*
+HP+LP, empty-floor-normalized, OR-fused; rejects breathing/sway; 100% on hardware) — and
+the **live breathing ±2 BPM validation** (paced 15 BPM → 15.0 BPM, error 0.0, PASS) on the
+3-board fleet. Live bring-up also surfaced and fixed a `parse_esp32_frame` header-offset
+bug (rssi/noise/sequence misaligned vs the firmware layout; rssi decoded to 0 for every
+frame) and documented the host firewall step (open inbound UDP 5005 — ufw was eating CSI).*

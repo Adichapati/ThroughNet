@@ -228,8 +228,8 @@ struct Esp32Frame {
     magic: u32,
     node_id: u8,
     n_antennas: u8,
-    n_subcarriers: u8,
-    freq_mhz: u16,
+    n_subcarriers: u16,
+    freq_mhz: u32,
     sequence: u32,
     rssi: i8,
     noise_floor: i8,
@@ -1383,17 +1383,17 @@ fn parse_esp32_frame(buf: &[u8]) -> Option<Esp32Frame> {
     //   [20..]   I/Q data
     let node_id = buf[4];
     let n_antennas = buf[5];
-    let n_subcarriers = buf[6];
-    let freq_mhz = u16::from_le_bytes([buf[8], buf[9]]);
-    let sequence = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]);
-    let rssi_raw = buf[14] as i8;
+    let n_subcarriers = u16::from_le_bytes([buf[6], buf[7]]);
+    let freq_mhz = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+    let sequence = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+    let rssi_raw = buf[16] as i8;
     // Fix RSSI sign: ensure it's always negative (dBm convention).
     let rssi = if rssi_raw > 0 {
         rssi_raw.saturating_neg()
     } else {
         rssi_raw
     };
-    let noise_floor = buf[15] as i8;
+    let noise_floor = buf[17] as i8;
 
     let iq_start = 20;
     let n_pairs = n_antennas as usize * n_subcarriers as usize;
@@ -1425,6 +1425,44 @@ fn parse_esp32_frame(buf: &[u8]) -> Option<Esp32Frame> {
         amplitudes,
         phases,
     })
+}
+
+#[cfg(test)]
+mod parse_esp32_frame_layout_tests {
+    //! Locks `parse_esp32_frame`'s header offsets to the firmware's
+    //! `csi_serialize_frame` layout (csi_collector.c). A real on-wire capture
+    //! (2026-06-13, node 3) previously decoded with `sequence`/`rssi`/`noise`
+    //! read from the wrong offsets — yielding rssi=0 and garbage sequence — even
+    //! though magic/node/subcarriers/length all passed. This guards that.
+    use super::*;
+
+    #[test]
+    fn parses_firmware_header_at_correct_offsets() {
+        // Header per csi_collector.c:114 — n_antennas=1, n_subcarriers=2 → 2 I/Q pairs.
+        let mut buf = vec![0u8; 24];
+        buf[0..4].copy_from_slice(&0xC511_0001u32.to_le_bytes()); // magic
+        buf[4] = 7; // node_id
+        buf[5] = 1; // n_antennas
+        buf[6..8].copy_from_slice(&2u16.to_le_bytes()); // n_subcarriers (u16)
+        buf[8..12].copy_from_slice(&2412u32.to_le_bytes()); // freq_mhz (u32, ch1)
+        buf[12..16].copy_from_slice(&40550u32.to_le_bytes()); // sequence (u32)
+        buf[16] = 0xC5; // rssi  = -59 dBm
+        buf[17] = 0x9D; // noise = -99 dBm
+        // [18..19] ppdu/flags = 0; I/Q at [20..]: (3,4) -> |.|=5, (0,0) -> 0
+        buf[20] = 3;
+        buf[21] = 4;
+
+        let f = parse_esp32_frame(&buf).expect("well-formed frame must parse");
+        assert_eq!(f.node_id, 7);
+        assert_eq!(f.n_antennas, 1);
+        assert_eq!(f.n_subcarriers, 2);
+        assert_eq!(f.freq_mhz, 2412);
+        assert_eq!(f.sequence, 40550);
+        assert_eq!(f.rssi, -59, "rssi must come from buf[16], not buf[14]");
+        assert_eq!(f.noise_floor, -99, "noise must come from buf[17], not buf[15]");
+        assert_eq!(f.amplitudes.len(), 2);
+        assert!((f.amplitudes[0] - 5.0).abs() < 1e-9);
+    }
 }
 
 // ── Signal field generation ──────────────────────────────────────────────────
@@ -2303,7 +2341,7 @@ async fn windows_wifi_task(state: SharedState, tick_ms: u64) {
             magic: 0xC511_0001,
             node_id: 0,
             n_antennas: 1,
-            n_subcarriers: obs_count.min(255) as u8,
+            n_subcarriers: obs_count.min(255) as u16,
             freq_mhz: 2437,
             sequence: seq,
             rssi: first_rssi.clamp(-128.0, 127.0) as i8,
@@ -2651,7 +2689,7 @@ fn generate_simulated_frame(tick: u64) -> Esp32Frame {
         magic: 0xC511_0001,
         node_id: 1,
         n_antennas: 1,
-        n_subcarriers: n_sub as u8,
+        n_subcarriers: n_sub as u16,
         freq_mhz: 2437,
         sequence: tick as u32,
         rssi: (-40.0 + 5.0 * (t * 0.2).sin()) as i8,
