@@ -239,13 +239,15 @@ v1/src/sensing/mac_wifi
 .cursorignore
 .cursorindexingignore
 
-# Claude Flow runtime artifacts (auto-generated, machine-specific)
+# claude-flow / ruvnet agent tooling was removed 2026-06-13.
+# Ignore only its auto-regenerated runtime STATE so it can't silently return.
+# .claude/, .mcp.json and .claude-plugin/ are intentionally NOT ignored, so any
+# re-creation surfaces as a visible untracked file rather than coming back quietly.
+.claude-flow/
 **/daemon.pid
 **/pending-insights.jsonl
 **/vectors.db
 **/memory.db
-**/.claude-flow/sessions/session-*.json
-**/.claude-flow/sessions/current.json
 
 # Node modules (should use npm ci, not committed)
 **/node_modules/
