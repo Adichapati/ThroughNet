@@ -10,8 +10,14 @@
 //! 3. **Windowed mean profiles** (~4 s, 50% overlap).
 //! 4. **Presence** = L2 distance from the current window profile to the frozen
 //!    empty-room baseline, in units of the baseline's own self-noise.
-//! 5. **Motion** = L2 distance between consecutive window profiles, in units of
-//!    the empty-room window-to-window rate.
+//! 5. **Motion** = consecutive-window profile change *relative to the current
+//!    perturbation magnitude* (motion ÷ presence). Live validation (2026-06-13)
+//!    showed absolute change can't separate a still subject on a strong link
+//!    (large but *stable* perturbation — node 3 read motion 50× while standing
+//!    still, higher than the 6× of walking) from a walker. The relative form fixes
+//!    that decisively (still-on-link now reads still 44/45), but only reaches
+//!    ~80–88% still/walking discrimination — the robust upgrade is 0.5–5 Hz
+//!    motion-band energy (see `MOTION_REL_THRESH`).
 //! 6. **Debounce**: `present()`/`moving()` commit a new boolean state only after
 //!    `DEBOUNCE_WINDOWS` consecutive windows disagree with the committed value, so
 //!    a lone transient window (walk-in, weight-shift on a hot link) can't flip the
@@ -30,9 +36,21 @@ const N_BINS: usize = 40;
 /// HT-LTF block location within the beacon CSI frame.
 const HT_LTF_START: usize = 64;
 const HT_LTF_LEN: usize = 64;
-/// Detection thresholds, in noise units (gate run #2 margins comfortably clear these).
+/// Presence threshold in self-noise units (gate run #2 margins comfortably clear it).
 const PRESENCE_THRESH: f64 = 3.0;
-const MOTION_THRESH: f64 = 3.0;
+/// Relative-motion threshold: motion (window-to-window change, in empty-rate units)
+/// divided by presence (perturbation magnitude, in self-noise units). Two live runs
+/// (2026-06-13) showed standing-still ≈ 0.19–0.30 vs walking ≈ 0.46–1.21 (median);
+/// 0.35 sits in the gap and keeps the fixed still-on-a-strong-link case correct. The
+/// earlier absolute threshold failed because a still subject on node 3's link line
+/// read motion 50× — *higher* than walking's 6× — since absolute change scales with
+/// the perturbation it sits on.
+///
+/// INTERIM: discrimination is ~80–88% (below the 90% gate) and run-dependent —
+/// walking's *relative* motion dips when the subject pauses or stands at a strong
+/// reflection mid-stride. The robust observable is 0.5–5 Hz motion-band energy on a
+/// per-frame series (walking = sustained Doppler; breathing = sub-band). TODO.
+const MOTION_REL_THRESH: f64 = 0.35;
 /// Consecutive disagreeing windows required to flip a committed present/moving
 /// state. At the ~2 s window cadence (WIN_FRAMES/2 frames @ ~37 fps) this debounces
 /// single-window transients over ~4 s — well inside the <10 s latency budget.
@@ -85,6 +103,15 @@ fn commit_state(committed: &mut Option<bool>, streak: &mut u32, raw: bool) {
     }
 }
 
+/// Relative-motion decision for one window. A node reads "moving" only when a person
+/// is present AND the window-to-window change is a large enough fraction of the
+/// perturbation magnitude (`rel = motion / presence`). Dividing by presence is what
+/// distinguishes a still subject on a strong link (large but stable perturbation,
+/// low `rel`) from a walking subject (the perturbation itself churns, high `rel`).
+fn is_moving_rel(present: bool, rel: f64) -> bool {
+    present && rel >= MOTION_REL_THRESH
+}
+
 /// Frozen empty-room reference for one node/link.
 #[derive(Debug, Clone)]
 pub struct LinkBaseline {
@@ -112,6 +139,9 @@ pub struct LinkDetector {
     /// Latest scores (noise units); `None` until enough data.
     pub presence_score: Option<f64>,
     pub motion_score: Option<f64>,
+    /// Latest relative motion = `motion_score / presence_score` (the still-vs-moving
+    /// discriminator); `None` until enough data.
+    pub motion_rel_score: Option<f64>,
     pub last_update: Option<Instant>,
     /// Debounced present state — committed only after `DEBOUNCE_WINDOWS` agreeing
     /// windows; `None` until the first scored window.
@@ -137,6 +167,7 @@ impl LinkDetector {
             baseline: None,
             presence_score: None,
             motion_score: None,
+            motion_rel_score: None,
             last_update: None,
             present_state: None,
             present_streak: 0,
@@ -182,17 +213,19 @@ impl LinkDetector {
             self.profiles.pop_front();
         }
         self.presence_score = Some(presence);
-        commit_state(
-            &mut self.present_state,
-            &mut self.present_streak,
-            presence >= PRESENCE_THRESH,
-        );
+        let present = presence >= PRESENCE_THRESH;
+        commit_state(&mut self.present_state, &mut self.present_streak, present);
         if let Some(m) = motion {
             self.motion_score = Some(m);
+            // Relative motion: window-to-window change as a fraction of the current
+            // perturbation magnitude. Guarded against the empty-room case where
+            // presence ≈ 0 — but motion only counts when `present` anyway.
+            let rel = if presence > NOISE_FLOOR { m / presence } else { 0.0 };
+            self.motion_rel_score = Some(rel);
             commit_state(
                 &mut self.moving_state,
                 &mut self.moving_streak,
-                m >= MOTION_THRESH,
+                is_moving_rel(present, rel),
             );
         }
         self.last_update = Some(Instant::now());
@@ -328,6 +361,21 @@ mod tests {
         let mut det = LinkDetector::new();
         det.push_frame(&[1.0; 32]); // too short — must not panic or count
         assert!(det.presence_score.is_none());
+    }
+
+    #[test]
+    fn relative_motion_separates_still_from_walking() {
+        // Regression against the 2026-06-13 live run (median per-node scores).
+        // rel = motion / presence.
+        // Standing still on node 3's link line: huge stable perturbation.
+        assert!(!is_moving_rel(true, 50.8 / 196.0), "still on a strong link (rel 0.26) is NOT moving");
+        // Standing still on node 2 elsewhere.
+        assert!(!is_moving_rel(true, 2.6 / 22.7), "still (rel 0.11) is NOT moving");
+        // Walking: motion comparable to presence.
+        assert!(is_moving_rel(true, 6.4 / 7.2), "walking on n3 (rel 0.89) IS moving");
+        assert!(is_moving_rel(true, 10.0 / 10.8), "walking on n2 (rel 0.93) IS moving");
+        // Absent: never moving, however high the ratio.
+        assert!(!is_moving_rel(false, 5.0), "not present → never moving");
     }
 
     #[test]

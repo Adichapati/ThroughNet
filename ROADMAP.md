@@ -226,16 +226,21 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 - **R5 — Single-room overfit**: validate in ≥2 rooms before calling numbers "accuracy".
 
 ## 7. Immediate next actions
-*Phase 1 (TX/RX firmware + gate) and the Phase-2 detector are closed; the original
-four items here are done. Current front:*
-1. **Run `tools/gate/validate.py` on the 3-board fleet** → record the real Phase-2
-   accuracy numbers (presence FP/detection/latency, motion discrimination) into
-   `tools/gate/README.md`. This formally clears the Phase-2 acceptance gate.
+*Phase 1 closed. Phase-2 **presence validated on hardware** (2026-06-13: FP 0%,
+detection 100%, latency 0 s — all three presence gates pass). Motion partially
+solved. Current front:*
+1. **Phase-2 motion gate (>90%)** — the relative-motion metric (`motion ÷ presence`)
+   fixed the still-on-a-strong-link failure (still-vs-moving 50% → ~85%) but plateaus
+   below the gate: walking under-detects when the subject pauses/turns. Replace the
+   window-rate observable with **0.5–5 Hz motion-band spectral energy** on a per-frame
+   series (walking = sustained Doppler; breathing = sub-band; §4 Phase-2 item 3).
+   Capture raw I/Q (`raw_capture.py`) for empty/still/walking, develop offline, re-run
+   `validate.py` to confirm >90%.
 2. **Phase 2.4 — breathing**: 0.1–0.5 Hz spectral peak when motion is low, with
-   SNR-based confidence (reuse `wifi-densepose-vitals`); then add the `breathing`
-   phase to `validate.py`.
+   SNR-based confidence (reuse `wifi-densepose-vitals`, with measured-rate handling);
+   then add the `breathing` phase to `validate.py`.
 3. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run) once the
    detection layer's numbers are locked.
 
-*Done: state-machine debounce (`throughnet.rs commit_state`, 2026-06-13); Phase-2
-validation harness scaffold (`validate.py`, 2026-06-13).*
+*Done 2026-06-13: state-machine debounce, validation harness (`validate.py`),
+relative-motion metric (still-on-link fixed), hardware run #1 (presence gates passed).*

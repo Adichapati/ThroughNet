@@ -33,6 +33,42 @@ input — each trip the right gate). A `SETTLE_S=10 s` post-phase allowance keep
 debounce/posture transient out of the steady-state metrics; latency is measured on
 the transient itself. Exit cleanly with code 0 (PASS) / 1 (FAIL).
 
+## Phase-2 acceptance validation — live on the 3-board fleet (2026-06-13)
+
+First end-to-end run of the harness against real hardware (driven phase-by-phase).
+
+**Run 1 — absolute motion metric:**
+
+| gate | result | |
+|---|---|---|
+| presence false-positive (empty) | **0.0%** | ✅ |
+| presence detection (occupied) | **100%** | ✅ |
+| presence latency (enter→detect) | **0.0 s** | ✅ |
+| motion still-vs-moving (5 s win) | **50%** | ❌ |
+
+Diagnosis: standing still **on node 3's link line** gave presence 196× (huge but
+*stable* perturbation). The motion metric — absolute window-to-window change ÷
+empty-rate — scales with the perturbation it sits on, so breathing/sway there read
+motion 50× (> walking's 6×). No threshold separates that. **Presence is
+production-ready; motion was conflating a still subject's position with movement.**
+
+**Fix — relative motion** (`motion ÷ presence`, the fractional change): still ≈
+0.19–0.30 vs walking ≈ 0.46–1.21 (median across runs). Implemented in `throughnet.rs`
+(`MOTION_REL_THRESH`, gated on presence).
+
+**Run 2 — relative motion:** the still-on-link case is fixed — standing still on
+n3's line now reads `present_still` **44/45** (was `present_moving` 39/44). Presence
+gates still pass. But still/walking discrimination only reaches **~80–88%** (run 2
+scored 71% at the initial 0.5 threshold; retuned to 0.35), because walking's
+*relative* motion dips when the subject pauses/turns — it's run-dependent and below
+the 90% gate.
+
+**Status: presence DONE (all 3 gates pass). Motion improved but gate not yet met.**
+Next: replace the window-rate observable with **0.5–5 Hz motion-band spectral
+energy** on a per-frame series (walking = sustained Doppler; breathing = sub-band) —
+the roadmap's intended motion feature. Needs raw I/Q capture (`raw_capture.py`) to
+develop offline.
+
 ## Phase-1 acceptance gate tooling
 
 `raw_capture.py <phase> <seconds>` — binds UDP 5005 (stop the sensing-server first)
