@@ -183,9 +183,12 @@ def countdown(seconds, label, base, samples):
             st = status(base)
             state = st.get("state")
             nodes = st.get("nodes", {})
+            br_bpm = st.get("breathing_bpm")
+            br_conf = st.get("breathing_confidence")
         except Exception as e:  # noqa: BLE001 — surface, don't crash the run
-            state, nodes = "error", {"error": str(e)}
-        samples.append({"t": t, "label": label, "state": state, "nodes": nodes})
+            state, nodes, br_bpm, br_conf = "error", {"error": str(e)}, None, None
+        samples.append({"t": t, "label": label, "state": state, "nodes": nodes,
+                        "breathing_bpm": br_bpm, "breathing_confidence": br_conf})
         if t - last_print >= 1.0:
             remaining = int(end - t)
             scores = []
@@ -195,9 +198,11 @@ def countdown(seconds, label, base, samples):
                         f"n{n} P{nd['presence_score']:.1f} "
                         f"M{(nd.get('motion_score') or 0):.1f}"
                     )
+            br = (f" BR {br_bpm:.1f}bpm(c{br_conf:.1f})"
+                  if isinstance(br_bpm, (int, float)) else "")
             print(
                 f"  [{label:11s}] {remaining:3d}s  state={state:14s} "
-                f"{' '.join(scores)}",
+                f"{' '.join(scores)}{br}",
                 flush=True,
             )
             last_print = t
@@ -306,6 +311,73 @@ def print_scorecard(scores):
     return overall
 
 
+# ── Breathing (Phase 2.4) ────────────────────────────────────────────────────
+def score_breathing(samples, truth_bpm=None):
+    """Median breathing rate over the breathing phase (present_still + a reading)."""
+    vals = [s["breathing_bpm"] for s in samples
+            if s.get("label") == "breathing"
+            and s.get("state") == "present_still"
+            and isinstance(s.get("breathing_bpm"), (int, float))]
+    confs = [s["breathing_confidence"] for s in samples
+             if s.get("label") == "breathing"
+             and isinstance(s.get("breathing_confidence"), (int, float))]
+    conf = sorted(confs)[len(confs) // 2] if confs else None
+    if not vals:
+        return {"bpm": None, "n": 0, "conf": conf, "error": None, "truth": truth_bpm}
+    bpm = sorted(vals)[len(vals) // 2]
+    error = abs(bpm - truth_bpm) if truth_bpm is not None else None
+    return {"bpm": bpm, "n": len(vals), "conf": conf, "error": error, "truth": truth_bpm}
+
+
+def run_breathing(base, truth_bpm, dwell, baseline_s=30):
+    """Focused respiratory-rate validation: baseline + one long still-breathing phase."""
+    samples = []
+    print("\n=== ThroughNet breathing (Phase-2.4) validation ===")
+    print(f"server: {base}")
+    try:
+        status(base)
+    except Exception as e:  # noqa: BLE001
+        print(f"Cannot reach the sensing-server at {base}: {e}\n"
+              "Start it first (it owns UDP 5005), then re-run.")
+        sys.exit(1)
+
+    capture_baseline(base, baseline_s)
+
+    if truth_bpm:
+        prompt(f"ENTER, sit/stand STILL within ~3 m of a link, and breathe at {truth_bpm:g} "
+               f"BPM (a metronome at {truth_bpm:g}/min helps). Hold very still — moving "
+               f"resets the estimator, which needs ~40 s of stillness before it reports.")
+    else:
+        prompt("ENTER, sit/stand STILL within ~3 m of a link, breathe normally and COUNT "
+               "your breaths for the run. Hold very still — moving resets the estimator, "
+               "which needs ~40 s of stillness before it reports.")
+
+    countdown(dwell, "breathing", base, samples)
+    res = score_breathing(samples, truth_bpm)
+
+    print("\n" + "=" * 60)
+    print("  BREATHING SCORECARD")
+    print("=" * 60)
+    if res["bpm"] is None:
+        print("  No confident reading (stayed below confidence, or never present_still).")
+        print(f"  best confidence seen: {res['conf']}")
+        print("  Try: closer to a link, hold stiller, or a longer --breathing-dwell.")
+        ok = False
+    else:
+        print(f"  Estimated rate: {res['bpm']:.1f} BPM   "
+              f"({res['n']} readings, conf {res['conf']:.1f})")
+        if res["truth"] is not None:
+            within = res["error"] <= 2.0
+            print(f"  Reference:      {res['truth']:.1f} BPM   error {res['error']:.1f} BPM"
+                  f"  (gate ±2)  {'PASS ✅' if within else 'FAIL ❌'}")
+            ok = within
+        else:
+            print("  (no --breathing-truth given — compare to your manual count)")
+            ok = True
+    print("=" * 60)
+    return samples, res, ok
+
+
 # ── --selftest: verify the scorers deterministically, no server/hardware ─────
 def _synth_run(fp_blips=1, enter_detect_offset=3.0, still_clean=True,
                moving_clean=True):
@@ -378,6 +450,18 @@ def selftest():
     if none_scores["presence_fp"] is not None:
         print("  FAIL: empty input should yield None metrics"); failures += 1
 
+    # 6. Breathing: median of the present_still readings (outlier-robust); ±2 gate.
+    br = [{"label": "breathing", "state": "present_still", "breathing_bpm": b,
+           "breathing_confidence": 3.0} for b in (14.8, 15.1, 15.0, 14.9, 30.0)]
+    r = score_breathing(br, truth_bpm=15.0)
+    if r["bpm"] is None or abs(r["bpm"] - 15.0) > 2.0 or r["error"] > 2.0:
+        print(f"  FAIL: breathing median should be ~15 (got {r})"); failures += 1
+    # readings while NOT present_still must be ignored
+    r2 = score_breathing([{"label": "breathing", "state": "present_moving",
+                           "breathing_bpm": 99.0, "breathing_confidence": 5.0}], 15.0)
+    if r2["bpm"] is not None:
+        print("  FAIL: non-still breathing samples must be ignored"); failures += 1
+
     print(f"\n[selftest] {'ALL PASS ✅' if failures == 0 else f'{failures} FAILURE(S) ❌'}")
     return failures == 0
 
@@ -394,12 +478,27 @@ def main():
                     help="verify the scoring functions (no server/hardware needed)")
     ap.add_argument("--out", default=None,
                     help="write the full run (samples + scores) to this JSON file")
+    ap.add_argument("--breathing", action="store_true",
+                    help="run the focused respiratory-rate (Phase-2.4) test instead")
+    ap.add_argument("--breathing-truth", type=float, default=None,
+                    help="manual/paced breath rate (BPM) to score against (±2 gate)")
+    ap.add_argument("--breathing-dwell", type=int, default=90,
+                    help="breathing phase length in seconds (default 90)")
     args = ap.parse_args()
 
     if args.selftest:
         sys.exit(0 if selftest() else 1)
 
     base = args.url.rstrip("/")
+
+    if args.breathing:
+        samples, res, ok = run_breathing(base, args.breathing_truth, args.breathing_dwell)
+        if args.out:
+            with open(args.out, "w") as f:
+                json.dump({"ts": time.time(), "url": base, "mode": "breathing",
+                           "result": res, "samples": samples}, f, indent=2)
+            print(f"\nwrote {len(samples)} samples -> {args.out}")
+        sys.exit(0 if ok else 1)
 
     if args.check:
         try:

@@ -25,7 +25,17 @@ python tools/gate/validate.py --quick         # shorter phases for a smoke run
 python tools/gate/validate.py --check         # just ping the server, print state
 python tools/gate/validate.py --selftest      # verify the scorers (no hardware)
 python tools/gate/validate.py --out run.json  # also dump samples + scores to JSON
+
+# Phase-2.4 breathing: focused respiratory-rate test (baseline + one long still phase)
+python tools/gate/validate.py --breathing --breathing-truth 12   # score vs a 12 BPM metronome (±2 gate)
+python tools/gate/validate.py --breathing                        # no ground truth — just reports the estimate
 ```
+
+The `--breathing` mode captures a baseline, then a single ~90 s phase where the
+subject sits **still within ~3 m of a link** and breathes at a counted/metronome rate.
+It reports the median `breathing_bpm` over the windows that read `present_still`; with
+`--breathing-truth N` it scores |estimate − N| against the **±2 BPM** gate. The
+estimator needs ~40 s of continuous stillness before it reports (moving resets it).
 
 The scoring is pure functions verified by `--selftest` (clean run passes all four
 gates; injected faults — 14 s latency, 40 empty-room blips, inverted motion, empty

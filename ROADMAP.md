@@ -234,9 +234,10 @@ Current front:*
    `breathing.rs`): 0.15–0.5 Hz bandpass → in-band bin selection → DFT spectral peak
    (interior 0.20–0.45 Hz, parabolic-interpolated) → BPM, prominence confidence,
    measured-rate, gated on `present_still`, best-link, on `/throughnet/status`. Offline:
-   still subject 18.5 BPM/conf 3.6, empty → unknown. **Remaining: (a) add a `breathing`
-   phase to `validate.py`; (b) live ±2 BPM run with counted/paced breathing** (a strong
-   slow sway leaking near the low edge is the case to probe).
+   still subject 18.5 BPM/conf 3.6, empty → unknown. `validate.py --breathing
+   [--breathing-truth N]` added (focused respiratory test, ±2 BPM gate). **Remaining:
+   the live ±2 BPM run with counted/paced breathing** (a strong slow sway leaking near
+   the low edge is the case to probe).
 2. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run + `doctor`).
 3. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
