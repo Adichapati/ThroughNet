@@ -15,6 +15,7 @@ pub mod csi;
 mod field_bridge;
 mod multistatic_bridge;
 pub mod pose;
+mod breathing;
 mod rvf_container;
 mod rvf_pipeline;
 mod throughnet;
@@ -4545,6 +4546,8 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
     let mut any_present = false;
     let mut any_moving = false;
     let mut have_scores = false;
+    // Best-link breathing: the highest-confidence node reporting a rate.
+    let mut best_breath: Option<(f64, f64)> = None; // (bpm, confidence)
     for (node, det) in s.throughnet.iter() {
         let present = det.present();
         let moving = det.moving();
@@ -4555,6 +4558,12 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
         if let Some(m) = moving {
             any_moving |= m;
         }
+        if let Some(bpm) = det.breathing_bpm() {
+            let c = det.breathing_confidence();
+            if best_breath.map_or(true, |(_, bc)| c > bc) {
+                best_breath = Some((bpm, c));
+            }
+        }
         nodes.insert(
             node.to_string(),
             serde_json::json!({
@@ -4564,6 +4573,8 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
                 "motion_score": det.motion_score,
                 "present": present,
                 "moving": moving,
+                "breathing_bpm": det.breathing_bpm(),
+                "breathing_confidence": det.breathing_confidence(),
                 "last_update_ms": det.last_update.map(|t| t.elapsed().as_millis() as u64),
             }),
         );
@@ -4577,8 +4588,15 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
     } else {
         "absent"
     };
+    // Breathing is only meaningful for a still, present subject.
+    let (breathing_bpm, breathing_confidence) = match (fused == "present_still", best_breath) {
+        (true, Some((bpm, c))) => (Some(bpm), Some(c)),
+        _ => (None, None),
+    };
     Json(serde_json::json!({
         "state": fused,
+        "breathing_bpm": breathing_bpm,
+        "breathing_confidence": breathing_confidence,
         "nodes": nodes,
         "capturing_baseline": s.throughnet_capture.is_some(),
     }))

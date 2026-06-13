@@ -230,10 +230,13 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 presence FP 0%, detection 100%, latency 0 s, motion still-vs-walking 100% — including
 the hardest case (a still subject breathing on a link line). Detection layer is locked.
 Current front:*
-1. **Phase 2.4 — breathing**: 0.1–0.5 Hz spectral peak when motion is low, with
-   SNR-based confidence (reuse `wifi-densepose-vitals`, with measured-rate handling —
-   the motion-band cascade in `throughnet.rs` is a ready template); then add the
-   `breathing` phase to `validate.py`. Validate against a manual breath count (±2 BPM).
+1. **Phase 2.4 — breathing** (detector BUILT + offline-validated 2026-06-13;
+   `breathing.rs`): 0.15–0.5 Hz bandpass → in-band bin selection → DFT spectral peak
+   (interior 0.20–0.45 Hz, parabolic-interpolated) → BPM, prominence confidence,
+   measured-rate, gated on `present_still`, best-link, on `/throughnet/status`. Offline:
+   still subject 18.5 BPM/conf 3.6, empty → unknown. **Remaining: (a) add a `breathing`
+   phase to `validate.py`; (b) live ±2 BPM run with counted/paced breathing** (a strong
+   slow sway leaking near the low edge is the case to probe).
 2. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run + `doctor`).
 3. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.

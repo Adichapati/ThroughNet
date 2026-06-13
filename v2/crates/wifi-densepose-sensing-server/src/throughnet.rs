@@ -53,10 +53,10 @@ const MOTION_BAND_THRESH: f64 = 3.0;
 /// Motion-band filter: a cascade of a 2nd-order Butterworth high-pass (rejects
 /// breathing/sway) and low-pass (rejects fast noise) at `NOMINAL_FPS`. The metric is
 /// normalized by the empty floor, so the small live fps variation (~36–38) cancels.
-const NOMINAL_FPS: f64 = 37.0;
+pub(crate) const NOMINAL_FPS: f64 = 37.0;
 const MOTION_BAND_HP: f64 = 1.0;
 const MOTION_BAND_LP: f64 = 6.0;
-const BUTTER_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
+pub(crate) const BUTTER_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// Consecutive disagreeing windows required to flip a committed present/moving
 /// state. At the ~2 s window cadence (WIN_FRAMES/2 frames @ ~37 fps) this debounces
 /// single-window transients over ~4 s — well inside the <10 s latency budget.
@@ -120,7 +120,7 @@ fn is_moving(present: bool, motion_band: f64) -> bool {
 /// RBJ 2nd-order Butterworth biquad (high-pass / low-pass), cascaded to form the motion
 /// band with steeper skirts than a single bandpass — the broad bandpass leaked breathing.
 #[derive(Debug, Clone, Copy)]
-struct Biquad {
+pub(crate) struct Biquad {
     b0: f64,
     b1: f64,
     b2: f64,
@@ -129,7 +129,7 @@ struct Biquad {
 }
 
 impl Biquad {
-    fn highpass(fs: f64, fc: f64, q: f64) -> Self {
+    pub(crate) fn highpass(fs: f64, fc: f64, q: f64) -> Self {
         let w0 = 2.0 * std::f64::consts::PI * fc / fs;
         let (cos, sin) = (w0.cos(), w0.sin());
         let alpha = sin / (2.0 * q);
@@ -143,7 +143,7 @@ impl Biquad {
         }
     }
 
-    fn lowpass(fs: f64, fc: f64, q: f64) -> Self {
+    pub(crate) fn lowpass(fs: f64, fc: f64, q: f64) -> Self {
         let w0 = 2.0 * std::f64::consts::PI * fc / fs;
         let (cos, sin) = (w0.cos(), w0.sin());
         let alpha = sin / (2.0 * q);
@@ -160,7 +160,7 @@ impl Biquad {
 
 /// Per-bin biquad delay memory.
 #[derive(Debug, Clone, Copy, Default)]
-struct BiquadState {
+pub(crate) struct BiquadState {
     x1: f64,
     x2: f64,
     y1: f64,
@@ -168,7 +168,7 @@ struct BiquadState {
 }
 
 impl BiquadState {
-    fn step(&mut self, bq: &Biquad, x: f64) -> f64 {
+    pub(crate) fn step(&mut self, bq: &Biquad, x: f64) -> f64 {
         let y =
             bq.b0 * x + bq.b1 * self.x1 + bq.b2 * self.x2 - bq.a1 * self.y1 - bq.a2 * self.y2;
         self.x2 = self.x1;
@@ -257,6 +257,10 @@ pub struct LinkDetector {
     /// Debounced moving state (same debounce as `present_state`).
     moving_state: Option<bool>,
     moving_streak: u32,
+    /// Respiratory-rate estimator (active only while `present_still`).
+    breathing: crate::breathing::BreathingEstimator,
+    /// Recent frame arrival times for a measured-fps estimate (breathing rate uses it).
+    recent_frames: VecDeque<Instant>,
 }
 
 impl Default for LinkDetector {
@@ -283,7 +287,37 @@ impl LinkDetector {
             present_streak: 0,
             moving_state: None,
             moving_streak: 0,
+            breathing: crate::breathing::BreathingEstimator::new(),
+            recent_frames: VecDeque::with_capacity(260),
         }
+    }
+
+    /// Measured frame rate from recent arrivals (falls back to `NOMINAL_FPS`).
+    fn fps(&self) -> f64 {
+        if self.recent_frames.len() < 2 {
+            return NOMINAL_FPS;
+        }
+        let span = self
+            .recent_frames
+            .back()
+            .unwrap()
+            .duration_since(*self.recent_frames.front().unwrap())
+            .as_secs_f64();
+        if span > 0.0 {
+            (self.recent_frames.len() - 1) as f64 / span
+        } else {
+            NOMINAL_FPS
+        }
+    }
+
+    /// Latest respiratory rate (BPM) when a still subject is present; else `None`.
+    pub fn breathing_bpm(&self) -> Option<f64> {
+        self.breathing.bpm
+    }
+
+    /// Confidence (peak prominence) of the latest breathing estimate.
+    pub fn breathing_confidence(&self) -> f64 {
+        self.breathing.confidence
     }
 
     /// Feed one raw CSI amplitude frame. Emits a new window profile every
@@ -292,6 +326,12 @@ impl LinkDetector {
         let Some(norm) = normalize(amplitudes) else {
             return;
         };
+
+        // Track arrival times for the measured-fps estimate (breathing rate uses it).
+        self.recent_frames.push_back(Instant::now());
+        if self.recent_frames.len() > 256 {
+            self.recent_frames.pop_front();
+        }
 
         // Motion-band filtering runs every frame on the baseline's bins (continuous
         // IIR — no per-window startup transient). Needs the baseline to know the bins.
@@ -314,6 +354,9 @@ impl LinkDetector {
             if self.band_ring.len() > WIN_FRAMES {
                 self.band_ring_sum -= self.band_ring.pop_front().unwrap_or(0.0);
             }
+
+            // Feed the breathing estimator the same normalized frame + bin set.
+            self.breathing.push(&norm, &bins);
         }
 
         self.frames.push_back(norm);
@@ -357,6 +400,15 @@ impl LinkDetector {
             is_moving(present, motion),
         );
         self.last_update = Some(Instant::now());
+
+        // Breathing: estimate only while a still subject is present; otherwise clear, so
+        // the next estimate only ever uses sustained-still data (no walking/empty mix).
+        if self.present_state == Some(true) && self.moving_state == Some(false) {
+            let fps = self.fps();
+            self.breathing.estimate(fps);
+        } else {
+            self.breathing.reset();
+        }
     }
 
     /// Debounced presence verdict (`None` until the first scored window). The raw
