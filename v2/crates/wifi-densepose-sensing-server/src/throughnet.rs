@@ -12,6 +12,11 @@
 //!    empty-room baseline, in units of the baseline's own self-noise.
 //! 5. **Motion** = L2 distance between consecutive window profiles, in units of
 //!    the empty-room window-to-window rate.
+//! 6. **Debounce**: `present()`/`moving()` commit a new boolean state only after
+//!    `DEBOUNCE_WINDOWS` consecutive windows disagree with the committed value, so
+//!    a lone transient window (walk-in, weight-shift on a hot link) can't flip the
+//!    fused state. Phase-2 live validation flagged exactly this — the raw scores
+//!    were correct but the bare-threshold state machine blipped on single windows.
 //!
 //! Baselines are captured per node via `BaselineCapture` (room must be empty).
 
@@ -28,6 +33,10 @@ const HT_LTF_LEN: usize = 64;
 /// Detection thresholds, in noise units (gate run #2 margins comfortably clear these).
 const PRESENCE_THRESH: f64 = 3.0;
 const MOTION_THRESH: f64 = 3.0;
+/// Consecutive disagreeing windows required to flip a committed present/moving
+/// state. At the ~2 s window cadence (WIN_FRAMES/2 frames @ ~37 fps) this debounces
+/// single-window transients over ~4 s — well inside the <10 s latency budget.
+const DEBOUNCE_WINDOWS: u32 = 2;
 /// Floor for self-noise to avoid divide-by-near-zero on unnaturally quiet links.
 const NOISE_FLOOR: f64 = 1e-6;
 
@@ -51,6 +60,29 @@ fn l2(a: &[f64], b: &[f64]) -> f64 {
         .map(|(x, y)| (x - y) * (x - y))
         .sum::<f64>()
         .sqrt()
+}
+
+/// Advance a debounced binary state by one window observation.
+///
+/// The first observation commits immediately (unknown → known). Thereafter a flip
+/// requires `DEBOUNCE_WINDOWS` consecutive windows disagreeing with the committed
+/// value; any window that agrees resets the streak, so an isolated transient window
+/// can never change state.
+fn commit_state(committed: &mut Option<bool>, streak: &mut u32, raw: bool) {
+    match *committed {
+        None => {
+            *committed = Some(raw);
+            *streak = 0;
+        }
+        Some(c) if c == raw => *streak = 0,
+        Some(_) => {
+            *streak += 1;
+            if *streak >= DEBOUNCE_WINDOWS {
+                *committed = Some(raw);
+                *streak = 0;
+            }
+        }
+    }
 }
 
 /// Frozen empty-room reference for one node/link.
@@ -81,6 +113,13 @@ pub struct LinkDetector {
     pub presence_score: Option<f64>,
     pub motion_score: Option<f64>,
     pub last_update: Option<Instant>,
+    /// Debounced present state — committed only after `DEBOUNCE_WINDOWS` agreeing
+    /// windows; `None` until the first scored window.
+    present_state: Option<bool>,
+    present_streak: u32,
+    /// Debounced moving state (same debounce as `present_state`).
+    moving_state: Option<bool>,
+    moving_streak: u32,
 }
 
 impl Default for LinkDetector {
@@ -99,6 +138,10 @@ impl LinkDetector {
             presence_score: None,
             motion_score: None,
             last_update: None,
+            present_state: None,
+            present_streak: 0,
+            moving_state: None,
+            moving_streak: 0,
         }
     }
 
@@ -139,18 +182,31 @@ impl LinkDetector {
             self.profiles.pop_front();
         }
         self.presence_score = Some(presence);
-        if motion.is_some() {
-            self.motion_score = motion;
+        commit_state(
+            &mut self.present_state,
+            &mut self.present_streak,
+            presence >= PRESENCE_THRESH,
+        );
+        if let Some(m) = motion {
+            self.motion_score = Some(m);
+            commit_state(
+                &mut self.moving_state,
+                &mut self.moving_streak,
+                m >= MOTION_THRESH,
+            );
         }
         self.last_update = Some(Instant::now());
     }
 
+    /// Debounced presence verdict (`None` until the first scored window). The raw
+    /// score remains available via `presence_score` for the API/diagnostics.
     pub fn present(&self) -> Option<bool> {
-        self.presence_score.map(|s| s >= PRESENCE_THRESH)
+        self.present_state
     }
 
+    /// Debounced motion verdict (`None` until the first scored window with motion).
     pub fn moving(&self) -> Option<bool> {
-        self.motion_score.map(|s| s >= MOTION_THRESH)
+        self.moving_state
     }
 }
 
@@ -262,6 +318,9 @@ mod tests {
         let perturbed_presence = det.presence_score.expect("scored");
         assert!(perturbed_presence > empty_presence * 3.0,
             "perturbed {perturbed_presence} should be >3x empty {empty_presence}");
+        // After sustained perturbation (~4 windows) the debounced verdict commits true.
+        assert_eq!(det.present(), Some(true),
+            "sustained perturbation should commit present=true through the debounce");
     }
 
     #[test]
@@ -269,5 +328,47 @@ mod tests {
         let mut det = LinkDetector::new();
         det.push_frame(&[1.0; 32]); // too short — must not panic or count
         assert!(det.presence_score.is_none());
+    }
+
+    #[test]
+    fn debounce_first_observation_commits_immediately() {
+        // Going from unknown → known must not wait for the debounce streak.
+        let mut state: Option<bool> = None;
+        let mut streak = 0u32;
+        commit_state(&mut state, &mut streak, true);
+        assert_eq!(state, Some(true));
+    }
+
+    #[test]
+    fn debounce_single_transient_window_does_not_flip() {
+        // Committed=false. A lone disagreeing window (the walk-in / weight-shift
+        // transient the Phase-2 validation flagged) must NOT flip the state.
+        let mut state = Some(false);
+        let mut streak = 0u32;
+        commit_state(&mut state, &mut streak, true); // transient window
+        assert_eq!(state, Some(false), "single window must not flip");
+        commit_state(&mut state, &mut streak, false); // back to baseline → streak resets
+        assert_eq!(state, Some(false));
+        // An isolated true every other window also never flips (streak keeps resetting).
+        commit_state(&mut state, &mut streak, true);
+        commit_state(&mut state, &mut streak, false);
+        commit_state(&mut state, &mut streak, true);
+        assert_eq!(state, Some(false), "oscillating windows must not flip");
+    }
+
+    #[test]
+    fn debounce_two_consecutive_windows_flip() {
+        // DEBOUNCE_WINDOWS=2 consecutive disagreeing windows commit the new state.
+        let mut state = Some(false);
+        let mut streak = 0u32;
+        for _ in 0..DEBOUNCE_WINDOWS {
+            commit_state(&mut state, &mut streak, true);
+        }
+        assert_eq!(state, Some(true), "two consecutive windows must flip");
+        // ...and flips back the same way.
+        for _ in 0..DEBOUNCE_WINDOWS {
+            commit_state(&mut state, &mut streak, false);
+        }
+        assert_eq!(state, Some(false));
     }
 }

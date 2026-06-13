@@ -65,8 +65,12 @@ empty-room baseline via `POST /api/v1/throughnet/baseline/start|stop`
 
 \* the two `present_moving` polls during "still" were the walk-in transient
 (first poll) and a weight-shift on the hot -52 dBm link (last poll). The raw
-scores are correct; the state machine needs **debounce** (require ~2
-consecutive windows to flip state) — queued for Phase-2 polish alongside the
-validation harness. Per-link geometry is visible as designed: the walking path
-crossed node 2's link line, so n2 carried the motion signal while n3 stayed
-near baseline.
+scores are correct; the state machine needed **debounce** (require ~2
+consecutive windows to flip state). **Done 2026-06-13** — `commit_state` in
+`throughnet.rs` now commits a present/moving flip only after `DEBOUNCE_WINDOWS`
+(=2) consecutive disagreeing windows (~4 s at the ~2 s window cadence, inside the
+<10 s latency budget); raw scores stay exposed on `/throughnet/status` for
+diagnostics. A lone transient window can no longer flip the fused state. The
+validation harness remains the next Phase-2 item. Per-link geometry is visible as
+designed: the walking path crossed node 2's link line, so n2 carried the motion
+signal while n3 stayed near baseline.
