@@ -4562,7 +4562,6 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
                 "baseline_age_s": det.baseline.as_ref().map(|b| b.captured_at.elapsed().as_secs()),
                 "presence_score": det.presence_score,
                 "motion_score": det.motion_score,
-                "motion_rel": det.motion_rel_score,
                 "present": present,
                 "moving": moving,
                 "last_update_ms": det.last_update.map(|t| t.elapsed().as_millis() as u64),

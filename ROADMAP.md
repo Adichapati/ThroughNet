@@ -226,21 +226,19 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 - **R5 — Single-room overfit**: validate in ≥2 rooms before calling numbers "accuracy".
 
 ## 7. Immediate next actions
-*Phase 1 closed. Phase-2 **presence validated on hardware** (2026-06-13: FP 0%,
-detection 100%, latency 0 s — all three presence gates pass). Motion partially
-solved. Current front:*
-1. **Phase-2 motion gate (>90%)** — the relative-motion metric (`motion ÷ presence`)
-   fixed the still-on-a-strong-link failure (still-vs-moving 50% → ~85%) but plateaus
-   below the gate: walking under-detects when the subject pauses/turns. Replace the
-   window-rate observable with **0.5–5 Hz motion-band spectral energy** on a per-frame
-   series (walking = sustained Doppler; breathing = sub-band; §4 Phase-2 item 3).
-   Capture raw I/Q (`raw_capture.py`) for empty/still/walking, develop offline, re-run
-   `validate.py` to confirm >90%.
-2. **Phase 2.4 — breathing**: 0.1–0.5 Hz spectral peak when motion is low, with
-   SNR-based confidence (reuse `wifi-densepose-vitals`, with measured-rate handling);
-   then add the `breathing` phase to `validate.py`.
-3. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run) once the
-   detection layer's numbers are locked.
+***PHASE 2 COMPLETE** (2026-06-13) — all four acceptance gates pass on real hardware:
+presence FP 0%, detection 100%, latency 0 s, motion still-vs-walking 100% — including
+the hardest case (a still subject breathing on a link line). Detection layer is locked.
+Current front:*
+1. **Phase 2.4 — breathing**: 0.1–0.5 Hz spectral peak when motion is low, with
+   SNR-based confidence (reuse `wifi-densepose-vitals`, with measured-rate handling —
+   the motion-band cascade in `throughnet.rs` is a ready template); then add the
+   `breathing` phase to `validate.py`. Validate against a manual breath count (±2 BPM).
+2. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run + `doctor`).
+3. **Second-room validation (R5)** — re-run `validate.py` in another room before
+   calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
-*Done 2026-06-13: state-machine debounce, validation harness (`validate.py`),
-relative-motion metric (still-on-link fixed), hardware run #1 (presence gates passed).*
+*Done 2026-06-13: state-machine debounce, validation harness (`validate.py`), and the
+motion observable across three iterations — absolute (failed on still-on-link) →
+relative `motion÷presence` (fixed that, ~85%) → **1–6 Hz motion-band energy** (cascaded
+HP+LP, empty-floor-normalized, OR-fused; rejects breathing/sway; 100% on hardware).*

@@ -63,11 +63,33 @@ scored 71% at the initial 0.5 threshold; retuned to 0.35), because walking's
 *relative* motion dips when the subject pauses/turns — it's run-dependent and below
 the 90% gate.
 
-**Status: presence DONE (all 3 gates pass). Motion improved but gate not yet met.**
-Next: replace the window-rate observable with **0.5–5 Hz motion-band spectral
-energy** on a per-frame series (walking = sustained Doppler; breathing = sub-band) —
-the roadmap's intended motion feature. Needs raw I/Q capture (`raw_capture.py`) to
-develop offline.
+**Run 3 — motion-band energy (the fix that clears the gate).** Replaced the
+window-rate observable with **~1–6 Hz spectral energy** (per-bin cascaded
+high-pass + low-pass IIR → windowed power), normalized by the empty-room floor and
+fused (OR) across links. Walking = sustained Doppler in-band; breathing (~0.25 Hz),
+its harmonics, and slow sway fall below the high-pass edge. Developed offline against
+raw captures (`raw_capture.py`), including a deliberately heavy-breathing still on the
+link line — the case a first (too-broad, single-bandpass) attempt leaked (still read
+4–9× live). The cascaded high-pass at 1 Hz rejects it:
+
+| | fused still (×floor) | fused walking (×floor) |
+|---|---|---|
+| empty/still | med 2.16, **max 2.54** | — |
+| walking | — | med 7.89, **min 3.52** |
+
+Clean gap → threshold **3.0×**. Live confirmation:
+
+| gate | result | |
+|---|---|---|
+| presence false-positive (empty) | **0.0%** | ✅ |
+| presence detection (occupied) | **100%** | ✅ |
+| presence latency (enter→detect) | **0.0 s** | ✅ |
+| motion still-vs-moving (5 s win) | **93% @2.5×, 100% @3.0×** | ✅ |
+
+**Status: PHASE 2 COMPLETE — all four acceptance gates pass on real hardware**,
+including a still subject breathing on a link line (the hardest case). Detector:
+`throughnet.rs` (`MOTION_BAND_THRESH`, `Biquad` cascade). Next: breathing extraction
+(Phase 2.4), then the Phase-3 setup CLI.
 
 ## Phase-1 acceptance gate tooling
 

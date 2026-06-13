@@ -10,14 +10,15 @@
 //! 3. **Windowed mean profiles** (~4 s, 50% overlap).
 //! 4. **Presence** = L2 distance from the current window profile to the frozen
 //!    empty-room baseline, in units of the baseline's own self-noise.
-//! 5. **Motion** = consecutive-window profile change *relative to the current
-//!    perturbation magnitude* (motion ÷ presence). Live validation (2026-06-13)
-//!    showed absolute change can't separate a still subject on a strong link
-//!    (large but *stable* perturbation — node 3 read motion 50× while standing
-//!    still, higher than the 6× of walking) from a walker. The relative form fixes
-//!    that decisively (still-on-link now reads still 44/45), but only reaches
-//!    ~80–88% still/walking discrimination — the robust upgrade is 0.5–5 Hz
-//!    motion-band energy (see `MOTION_REL_THRESH`).
+//! 5. **Motion** = ~1–6 Hz spectral energy (per-bin cascaded high-pass+low-pass IIR →
+//!    windowed power) of the top-bin amplitudes, normalized by the empty-room floor and
+//!    fused (OR) across links. Walking churns the channel with sustained Doppler in
+//!    this band; breathing (~0.25 Hz), its harmonics, and slow sway fall below the
+//!    high-pass edge, and the static link perturbation is DC. Raw-capture validation
+//!    (2026-06-13, incl. heavy-breathing still on the link) plus a live run: fused
+//!    still ≤ 2.5× floor, walking ≥ 3.5× → 100% at a 3.0× threshold (presence FP 0%,
+//!    detection 100%, latency 0 s). The earlier window-rate metrics (~85%) and a
+//!    too-broad single bandpass (leaked breathing) are in git history.
 //! 6. **Debounce**: `present()`/`moving()` commit a new boolean state only after
 //!    `DEBOUNCE_WINDOWS` consecutive windows disagree with the committed value, so
 //!    a lone transient window (walk-in, weight-shift on a hot link) can't flip the
@@ -38,19 +39,24 @@ const HT_LTF_START: usize = 64;
 const HT_LTF_LEN: usize = 64;
 /// Presence threshold in self-noise units (gate run #2 margins comfortably clear it).
 const PRESENCE_THRESH: f64 = 3.0;
-/// Relative-motion threshold: motion (window-to-window change, in empty-rate units)
-/// divided by presence (perturbation magnitude, in self-noise units). Two live runs
-/// (2026-06-13) showed standing-still ≈ 0.19–0.30 vs walking ≈ 0.46–1.21 (median);
-/// 0.35 sits in the gap and keeps the fixed still-on-a-strong-link case correct. The
-/// earlier absolute threshold failed because a still subject on node 3's link line
-/// read motion 50× — *higher* than walking's 6× — since absolute change scales with
-/// the perturbation it sits on.
-///
-/// INTERIM: discrimination is ~80–88% (below the 90% gate) and run-dependent —
-/// walking's *relative* motion dips when the subject pauses or stands at a strong
-/// reflection mid-stride. The robust observable is 0.5–5 Hz motion-band energy on a
-/// per-frame series (walking = sustained Doppler; breathing = sub-band). TODO.
-const MOTION_REL_THRESH: f64 = 0.35;
+/// Motion = ~1–6 Hz spectral energy of the per-frame top-bin amplitudes, normalized by
+/// the empty-room floor, fused (OR) across links. Walking churns the channel with
+/// sustained Doppler in this band; a still person's breathing (~0.25 Hz), its low
+/// harmonics, and slow sway fall below the high-pass edge, and the static link
+/// perturbation is DC. A live run exposed that a broad single-biquad band leaked
+/// breathing on the link a subject stood on (still read 4–9×); the cascaded high-pass
+/// fixes it. Tuned on the 2026-06-13 raw captures incl. a heavy-breathing still, then a
+/// live run: FUSED still ≤ 1.7× the floor offline / ≤ 2.5× live (n2 catching slight
+/// postural sway), walking ≥ 3.5× → 3.0× sits in the gap with ~0.5× margin each side.
+/// Live confirmation: motion still-vs-walking 93% at 2.5×, 100% at 3.0×; FP 0%.
+const MOTION_BAND_THRESH: f64 = 3.0;
+/// Motion-band filter: a cascade of a 2nd-order Butterworth high-pass (rejects
+/// breathing/sway) and low-pass (rejects fast noise) at `NOMINAL_FPS`. The metric is
+/// normalized by the empty floor, so the small live fps variation (~36–38) cancels.
+const NOMINAL_FPS: f64 = 37.0;
+const MOTION_BAND_HP: f64 = 1.0;
+const MOTION_BAND_LP: f64 = 6.0;
+const BUTTER_Q: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// Consecutive disagreeing windows required to flip a committed present/moving
 /// state. At the ~2 s window cadence (WIN_FRAMES/2 frames @ ~37 fps) this debounces
 /// single-window transients over ~4 s — well inside the <10 s latency budget.
@@ -103,13 +109,109 @@ fn commit_state(committed: &mut Option<bool>, streak: &mut u32, raw: bool) {
     }
 }
 
-/// Relative-motion decision for one window. A node reads "moving" only when a person
-/// is present AND the window-to-window change is a large enough fraction of the
-/// perturbation magnitude (`rel = motion / presence`). Dividing by presence is what
-/// distinguishes a still subject on a strong link (large but stable perturbation,
-/// low `rel`) from a walking subject (the perturbation itself churns, high `rel`).
-fn is_moving_rel(present: bool, rel: f64) -> bool {
-    present && rel >= MOTION_REL_THRESH
+/// Motion decision for one window: a node reads "moving" only when a person is present
+/// AND the motion-band power (normalized by the empty floor) clears the threshold.
+/// Gating on presence keeps the empty-room band-noise floor (≈1×) from ever reading as
+/// motion in an unoccupied room.
+fn is_moving(present: bool, motion_band: f64) -> bool {
+    present && motion_band >= MOTION_BAND_THRESH
+}
+
+/// RBJ 2nd-order Butterworth biquad (high-pass / low-pass), cascaded to form the motion
+/// band with steeper skirts than a single bandpass — the broad bandpass leaked breathing.
+#[derive(Debug, Clone, Copy)]
+struct Biquad {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+}
+
+impl Biquad {
+    fn highpass(fs: f64, fc: f64, q: f64) -> Self {
+        let w0 = 2.0 * std::f64::consts::PI * fc / fs;
+        let (cos, sin) = (w0.cos(), w0.sin());
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 + cos) / 2.0 / a0,
+            b1: -(1.0 + cos) / a0,
+            b2: (1.0 + cos) / 2.0 / a0,
+            a1: -2.0 * cos / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+
+    fn lowpass(fs: f64, fc: f64, q: f64) -> Self {
+        let w0 = 2.0 * std::f64::consts::PI * fc / fs;
+        let (cos, sin) = (w0.cos(), w0.sin());
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 - cos) / 2.0 / a0,
+            b1: (1.0 - cos) / a0,
+            b2: (1.0 - cos) / 2.0 / a0,
+            a1: -2.0 * cos / a0,
+            a2: (1.0 - alpha) / a0,
+        }
+    }
+}
+
+/// Per-bin biquad delay memory.
+#[derive(Debug, Clone, Copy, Default)]
+struct BiquadState {
+    x1: f64,
+    x2: f64,
+    y1: f64,
+    y2: f64,
+}
+
+impl BiquadState {
+    fn step(&mut self, bq: &Biquad, x: f64) -> f64 {
+        let y =
+            bq.b0 * x + bq.b1 * self.x1 + bq.b2 * self.x2 - bq.a1 * self.y1 - bq.a2 * self.y2;
+        self.x2 = self.x1;
+        self.x1 = x;
+        self.y2 = self.y1;
+        self.y1 = y;
+        y
+    }
+}
+
+/// Median windowed motion-band power over an empty-room capture — the floor that live
+/// motion-band power is normalized against. Runs the biquad from rest over `frames`
+/// (the startup transient lands in the first window; the median is robust to it).
+fn motion_band_floor(frames: &[Vec<f64>], bins: &[usize]) -> f64 {
+    let hp = Biquad::highpass(NOMINAL_FPS, MOTION_BAND_HP, BUTTER_Q);
+    let lp = Biquad::lowpass(NOMINAL_FPS, MOTION_BAND_LP, BUTTER_Q);
+    let mut hs = vec![BiquadState::default(); bins.len()];
+    let mut ls = vec![BiquadState::default(); bins.len()];
+    let per_frame: Vec<f64> = frames
+        .iter()
+        .map(|f| {
+            let mut s = 0.0;
+            for (i, &k) in bins.iter().enumerate() {
+                let y = ls[i].step(&lp, hs[i].step(&hp, f[k]));
+                s += y * y;
+            }
+            s
+        })
+        .collect();
+    let nbins = bins.len().max(1) as f64;
+    let mut powers = Vec::new();
+    let mut t0 = 0;
+    while t0 + WIN_FRAMES <= per_frame.len() {
+        let sum: f64 = per_frame[t0..t0 + WIN_FRAMES].iter().sum();
+        powers.push(sum / (WIN_FRAMES as f64 * nbins));
+        t0 += WIN_FRAMES / 2;
+    }
+    powers.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if powers.is_empty() {
+        NOISE_FLOOR
+    } else {
+        powers[powers.len() / 2].max(NOISE_FLOOR)
+    }
 }
 
 /// Frozen empty-room reference for one node/link.
@@ -121,8 +223,9 @@ pub struct LinkBaseline {
     bins: Vec<usize>,
     /// Median window-profile distance to `profile` during the (empty) capture.
     self_noise: f64,
-    /// Median window-to-window rate during the (empty) capture.
-    empty_rate: f64,
+    /// Median windowed motion-band power during the (empty) capture — the floor that
+    /// live motion-band power is normalized against.
+    empty_band_floor: f64,
     pub captured_at: Instant,
     pub n_windows: usize,
 }
@@ -132,16 +235,20 @@ pub struct LinkBaseline {
 pub struct LinkDetector {
     /// Normalized frames awaiting windowing (bounded ring).
     frames: VecDeque<Vec<f64>>,
-    /// Most recent window profiles (for motion rate; bounded).
-    profiles: VecDeque<Vec<f64>>,
     frames_since_window: usize,
+    /// Motion-band cascade coefficients (high-pass + low-pass, computed once).
+    band_hp: Biquad,
+    band_lp: Biquad,
+    /// Per-bin motion-band filter state (hp, lp), sized to the baseline's bin set.
+    band_filters: Vec<(BiquadState, BiquadState)>,
+    /// Per-frame motion-band energy (Σ filtered² over bins), rolling over a window.
+    band_ring: VecDeque<f64>,
+    band_ring_sum: f64,
     pub baseline: Option<LinkBaseline>,
-    /// Latest scores (noise units); `None` until enough data.
+    /// Latest presence score, in self-noise units; `None` until enough data.
     pub presence_score: Option<f64>,
+    /// Latest motion-band power normalized by the empty floor (still-vs-moving score).
     pub motion_score: Option<f64>,
-    /// Latest relative motion = `motion_score / presence_score` (the still-vs-moving
-    /// discriminator); `None` until enough data.
-    pub motion_rel_score: Option<f64>,
     pub last_update: Option<Instant>,
     /// Debounced present state — committed only after `DEBOUNCE_WINDOWS` agreeing
     /// windows; `None` until the first scored window.
@@ -162,12 +269,15 @@ impl LinkDetector {
     pub fn new() -> Self {
         Self {
             frames: VecDeque::with_capacity(WIN_FRAMES + 8),
-            profiles: VecDeque::with_capacity(8),
             frames_since_window: 0,
+            band_hp: Biquad::highpass(NOMINAL_FPS, MOTION_BAND_HP, BUTTER_Q),
+            band_lp: Biquad::lowpass(NOMINAL_FPS, MOTION_BAND_LP, BUTTER_Q),
+            band_filters: Vec::new(),
+            band_ring: VecDeque::with_capacity(WIN_FRAMES + 8),
+            band_ring_sum: 0.0,
             baseline: None,
             presence_score: None,
             motion_score: None,
-            motion_rel_score: None,
             last_update: None,
             present_state: None,
             present_streak: 0,
@@ -182,6 +292,30 @@ impl LinkDetector {
         let Some(norm) = normalize(amplitudes) else {
             return;
         };
+
+        // Motion-band filtering runs every frame on the baseline's bins (continuous
+        // IIR — no per-window startup transient). Needs the baseline to know the bins.
+        if let Some(bins) = self.baseline.as_ref().map(|b| b.bins.clone()) {
+            if self.band_filters.len() != bins.len() {
+                self.band_filters =
+                    vec![(BiquadState::default(), BiquadState::default()); bins.len()];
+                self.band_ring.clear();
+                self.band_ring_sum = 0.0;
+            }
+            let (hp, lp) = (self.band_hp, self.band_lp);
+            let mut frame_band = 0.0;
+            for (i, &k) in bins.iter().enumerate() {
+                let (hs, ls) = &mut self.band_filters[i];
+                let y = ls.step(&lp, hs.step(&hp, norm[k]));
+                frame_band += y * y;
+            }
+            self.band_ring.push_back(frame_band);
+            self.band_ring_sum += frame_band;
+            if self.band_ring.len() > WIN_FRAMES {
+                self.band_ring_sum -= self.band_ring.pop_front().unwrap_or(0.0);
+            }
+        }
+
         self.frames.push_back(norm);
         if self.frames.len() > WIN_FRAMES {
             self.frames.pop_front();
@@ -195,39 +329,33 @@ impl LinkDetector {
         let Some(base) = self.baseline.as_ref() else {
             return; // no baseline yet — nothing to score against
         };
-        // Window mean profile over the baseline's bin set.
+        // Presence: distance of the window mean profile from the empty baseline.
         let profile: Vec<f64> = base
             .bins
             .iter()
             .map(|&k| self.frames.iter().map(|f| f[k]).sum::<f64>() / self.frames.len() as f64)
             .collect();
-
         let presence = l2(&profile, &base.profile) / base.self_noise.max(NOISE_FLOOR);
-        let motion = self
-            .profiles
-            .back()
-            .map(|prev| l2(&profile, prev) / base.empty_rate.max(NOISE_FLOOR));
-
-        self.profiles.push_back(profile);
-        if self.profiles.len() > 4 {
-            self.profiles.pop_front();
-        }
-        self.presence_score = Some(presence);
         let present = presence >= PRESENCE_THRESH;
+
+        // Motion: windowed motion-band power, normalized by the empty-room floor.
+        let nbins = base.bins.len().max(1) as f64;
+        let band_power = if self.band_ring.is_empty() {
+            0.0
+        } else {
+            self.band_ring_sum / (self.band_ring.len() as f64 * nbins)
+        };
+        let motion = band_power / base.empty_band_floor.max(NOISE_FLOOR);
+        // `base` borrow ends here; safe to mutate `self` below.
+
+        self.presence_score = Some(presence);
+        self.motion_score = Some(motion);
         commit_state(&mut self.present_state, &mut self.present_streak, present);
-        if let Some(m) = motion {
-            self.motion_score = Some(m);
-            // Relative motion: window-to-window change as a fraction of the current
-            // perturbation magnitude. Guarded against the empty-room case where
-            // presence ≈ 0 — but motion only counts when `present` anyway.
-            let rel = if presence > NOISE_FLOOR { m / presence } else { 0.0 };
-            self.motion_rel_score = Some(rel);
-            commit_state(
-                &mut self.moving_state,
-                &mut self.moving_streak,
-                is_moving_rel(present, rel),
-            );
-        }
+        commit_state(
+            &mut self.moving_state,
+            &mut self.moving_streak,
+            is_moving(present, motion),
+        );
         self.last_update = Some(Instant::now());
     }
 
@@ -299,15 +427,14 @@ impl BaselineCapture {
         dists.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let self_noise = dists[dists.len() / 2].max(NOISE_FLOOR);
 
-        let mut rates: Vec<f64> = profiles.windows(2).map(|w| l2(&w[1], &w[0])).collect();
-        rates.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let empty_rate = rates[rates.len() / 2].max(NOISE_FLOOR);
+        // Empty-room motion-band floor: run the same bandpass over the capture.
+        let empty_band_floor = motion_band_floor(&self.frames, &bins);
 
         Ok(LinkBaseline {
             profile: mean_profile,
             bins,
             self_noise,
-            empty_rate,
+            empty_band_floor,
             captured_at: Instant::now(),
             n_windows: profiles.len(),
         })
@@ -364,18 +491,44 @@ mod tests {
     }
 
     #[test]
-    fn relative_motion_separates_still_from_walking() {
-        // Regression against the 2026-06-13 live run (median per-node scores).
-        // rel = motion / presence.
-        // Standing still on node 3's link line: huge stable perturbation.
-        assert!(!is_moving_rel(true, 50.8 / 196.0), "still on a strong link (rel 0.26) is NOT moving");
-        // Standing still on node 2 elsewhere.
-        assert!(!is_moving_rel(true, 2.6 / 22.7), "still (rel 0.11) is NOT moving");
-        // Walking: motion comparable to presence.
-        assert!(is_moving_rel(true, 6.4 / 7.2), "walking on n3 (rel 0.89) IS moving");
-        assert!(is_moving_rel(true, 10.0 / 10.8), "walking on n2 (rel 0.93) IS moving");
-        // Absent: never moving, however high the ratio.
-        assert!(!is_moving_rel(false, 5.0), "not present → never moving");
+    fn motion_band_decision() {
+        // Anchored to the 2026-06-13 live run (fused, incl. heavy-breathing still):
+        // still ≤ 2.5× floor, walking ≥ 3.5×, threshold 3.0×.
+        assert!(!is_moving(true, 1.0), "at the empty floor → still");
+        assert!(!is_moving(true, 2.5), "breathing-still + slight sway max → still");
+        assert!(is_moving(true, 3.5), "lowest walking window → moving");
+        assert!(is_moving(true, 12.0), "median walking → moving");
+        assert!(!is_moving(false, 9.0), "not present → never moving");
+    }
+
+    #[test]
+    fn motion_band_separates_dc_from_oscillation() {
+        // Empty baseline (band noise floor only).
+        let mut cap = BaselineCapture::default();
+        for s in 0..600 {
+            cap.push_frame(&synth_frame(s, 0.0));
+        }
+        let base = cap.finalize().expect("baseline");
+
+        // Still: a large but CONSTANT perturbation (DC offset — no 0.5–5 Hz energy).
+        let mut det = LinkDetector::new();
+        det.baseline = Some(base.clone());
+        for s in 600..1200 {
+            det.push_frame(&synth_frame(s, 4.0));
+        }
+        assert_eq!(det.present(), Some(true), "constant perturbation → present");
+        assert_eq!(det.moving(), Some(false), "a DC perturbation has no motion-band energy");
+
+        // Walking: same mean perturbation + a 2 Hz oscillation (inside the band).
+        let mut det = LinkDetector::new();
+        det.baseline = Some(base);
+        for s in 600..1200 {
+            let t = (s - 600) as f64 / NOMINAL_FPS;
+            let p = 4.0 + 2.0 * (2.0 * std::f64::consts::PI * 2.0 * t).sin();
+            det.push_frame(&synth_frame(s, p));
+        }
+        assert_eq!(det.present(), Some(true), "still present while moving");
+        assert_eq!(det.moving(), Some(true), "a 2 Hz oscillation IS motion-band energy");
     }
 
     #[test]
