@@ -1,6 +1,6 @@
 # ThroughNet Roadmap — from working prototype to shippable product
 
-*Last updated: 2026-06-12. This is a living document.*
+*Last updated: 2026-06-13. This is a living document.*
 
 ## 1. Vision
 
@@ -107,6 +107,10 @@ empty baseline, 3.6×–9.1×; motion = window-to-window profile rate).
    protocols (empty / enter / still / breathing / moving / exit), recorded to disk
    (recording infra exists), scored automatically: detection rate, false-positive rate,
    latency. Every tuning change re-runs the suite. No more eyeballing.
+   **Built (2026-06-13): `tools/gate/validate.py`** — drives the live `/throughnet/*`
+   API through the phases and auto-scores all four acceptance gates; scoring is
+   `--selftest`-verified. Pending: a run on the 3-board fleet to record the real
+   accuracy numbers (breathing phase wired once Phase-2 item 4 lands).
 
 Acceptance:
 - Presence: <5% false-positive (empty), >95% detection (occupied), <10 s latency.
@@ -222,7 +226,16 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 - **R5 — Single-room overfit**: validate in ≥2 rooms before calling numbers "accuracy".
 
 ## 7. Immediate next actions
-1. Commit + push current state (calibration fix, this roadmap).
-2. Phase 1.1: implement `role=tx` beacon mode in firmware (start from c6_espnow sender).
-3. Phase 1.2: `role=rx` (MAC filter + radio-silence) + provisioning flags.
-4. Re-run the empty/still/moving experiment against the Phase-1 acceptance gate.
+*Phase 1 (TX/RX firmware + gate) and the Phase-2 detector are closed; the original
+four items here are done. Current front:*
+1. **Run `tools/gate/validate.py` on the 3-board fleet** → record the real Phase-2
+   accuracy numbers (presence FP/detection/latency, motion discrimination) into
+   `tools/gate/README.md`. This formally clears the Phase-2 acceptance gate.
+2. **Phase 2.4 — breathing**: 0.1–0.5 Hz spectral peak when motion is low, with
+   SNR-based confidence (reuse `wifi-densepose-vitals`); then add the `breathing`
+   phase to `validate.py`.
+3. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run) once the
+   detection layer's numbers are locked.
+
+*Done: state-machine debounce (`throughnet.rs commit_state`, 2026-06-13); Phase-2
+validation harness scaffold (`validate.py`, 2026-06-13).*

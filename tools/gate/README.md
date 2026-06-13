@@ -1,4 +1,39 @@
-# Phase-1 acceptance gate tooling
+# ThroughNet gate & validation tooling
+
+## Phase-2 validation harness — `validate.py`
+
+The tool that turns "it looked right when I watched it" into measured numbers.
+Drives the running sensing-server's ThroughNet REST API through scripted
+ground-truth phases (baseline → empty → enter+still → moving → exit), records the
+fused state + per-node scores each poll, and scores the run against the Phase-2
+acceptance gates (ROADMAP §4):
+
+| metric | gate |
+|---|---|
+| presence false-positive (empty room) | < 5 % |
+| presence detection (occupied, settled) | > 95 % |
+| presence latency (enter → first detect) | < 10 s |
+| motion still-vs-moving discrimination (5 s windows) | > 90 % |
+
+Reuses only the existing endpoints (`POST /api/v1/throughnet/baseline/start|stop`,
+`GET /api/v1/throughnet/status`) — **no server changes**. Start the sensing-server
+first (it owns UDP 5005); the harness talks to its HTTP API (default `:8080`).
+
+```bash
+python tools/gate/validate.py                 # full interactive run (one person)
+python tools/gate/validate.py --quick         # shorter phases for a smoke run
+python tools/gate/validate.py --check         # just ping the server, print state
+python tools/gate/validate.py --selftest      # verify the scorers (no hardware)
+python tools/gate/validate.py --out run.json  # also dump samples + scores to JSON
+```
+
+The scoring is pure functions verified by `--selftest` (clean run passes all four
+gates; injected faults — 14 s latency, 40 empty-room blips, inverted motion, empty
+input — each trip the right gate). A `SETTLE_S=10 s` post-phase allowance keeps the
+debounce/posture transient out of the steady-state metrics; latency is measured on
+the transient itself. Exit cleanly with code 0 (PASS) / 1 (FAIL).
+
+## Phase-1 acceptance gate tooling
 
 `raw_capture.py <phase> <seconds>` — binds UDP 5005 (stop the sensing-server first)
 and records raw ADR-018 CSI I/Q frames to `/tmp/tn-iq-<phase>.jsonl`.
