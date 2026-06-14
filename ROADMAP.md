@@ -338,9 +338,13 @@ UI. See **Phase R** above. Current front:*
    (`tn-onboarding`: a paper-tear cover intro → 6-step wizard prepare/flash/connect/place/
    calibrate/done) are landed, mock-driven via a control panel + mock setup steps. App IA
    decided: home = diorama-as-home; `tn-app` routes first-run→onboarding, `finish`→home.
-   Remaining A1: wire the real `/throughnet/status` (now surfaces per-node `stale`) +
-   `/ws/sensing` transport + home overlay cards + Nodes/Events/Settings, Linux first.
-   Then A2 embed (`rust-embed`), A3 in-app setup, A4 single-binary packaging (ADR-151 §7).
+   A1 is now **live**: the real `/api/v1/throughnet/status` + `/api/v1/nodes` transport (1 Hz poll;
+   per-node `stale`, RSSI + CSI packet rate), home overlay cards, and Nodes/Events/Settings screens
+   are landed, and the onboarding cover was upgraded to a **draggable WebGL paper tear**. **A2 done**:
+   the UI is embedded into the `sensing-server` binary (`rust-embed`, opt-in `embed-ui` feature) +
+   an app-mode launcher (`scripts/throughnet-app.sh`). Next: **A3** in-app setup (real
+   `/api/v1/setup/{scan,flash,provision,doctor}` behind the onboarding steps, ESP32-gated), then
+   **A4** single-binary packaging (ADR-151 §7).
    Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
