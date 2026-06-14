@@ -117,11 +117,19 @@ Acceptance:
 - Motion: still vs moving discriminated >90% on 5 s windows.
 - Breathing: rate within ±2 BPM of a manual count, for a still subject ≤3 m from a link.
 
-### Phase R — Robustness foundation (controlled-link product hardening) ← CURRENT
+### Phase R — Robustness foundation (controlled-link product hardening)
 *Goal: the proven detection stack survives real-world change — adding nodes, and the
 host/router changing IP — before any product UI is built. Direction set 2026-06-13:
 build our own app from scratch (not the inherited RuView Tauri app), mDNS for discovery,
 robustness first.*
+
+***STATUS (2026-06-14):** R1 **verified on the live fleet** — both RX boards resolve the
+server via mDNS (subnet-correct pick over docker0) and stream; commit `aa27c13`. R2 **done**
+— `provision.py --auto` fleet auto-id + N-agnostic, staleness-aware fusion (fixes a phantom-
+presence gap from a dropped node); commit `d1a6341`. R3 **gates written + `--selftest`-green**
+(`tools/gate/resilience.py`); commit `034fc3d`. Remaining: the two R3 **live** runs are
+operator-in-the-loop (IP flip needs sudo; add-node needs a 4th board) — run when convenient.
+Phase R code is complete; the front advances to **Phase A** (our own app).*
 
 **R1 — mDNS service discovery (router/IP-change resilience).** Boards push CSI to a static
 NVS `target_ip`; when the host IP changes (DHCP / new router) streaming silently dies — the
@@ -291,12 +299,14 @@ UI. See **Phase R** above. Current front:*
    absent misfires. Best-link picker correctly leaned on the stronger receiver (node 2);
    the weaker link rarely cleared the confidence floor — a geometry note, not a detector
    fault. `validate.py --breathing [--breathing-truth N]` is the canonical harness.
-2. **Phase R — robustness foundation (CURRENT).** R1 mDNS service discovery (router/IP-change
-   resilience), R2 multi-node auto-id, R3 scripted resilience gates. Full detail in **Phase R**
-   above.
-3. **Phase A — our own app** (after R): research spike → ADR for app stack + ThroughNet design
+2. **Phase R — robustness foundation — CODE COMPLETE (2026-06-14).** R1 mDNS discovery
+   (verified live), R2 multi-node auto-id + staleness-aware fusion, R3 scripted resilience
+   gates (`--selftest`-green). Only the two R3 *live* runs (IP-flip, add-a-4th-board) remain,
+   operator-in-the-loop. Full detail + status in **Phase R** above.
+3. **Phase A — our own app (CURRENT).** Research spike → ADR for app stack + ThroughNet design
    system → build setup-baked-in + a polished presence/motion/breathing UI on
-   `/throughnet/status`, Linux first. Replaces the CLI-first framing of Phase 3.
+   `/throughnet/status` (now also surfaces per-node `stale`), Linux first. Replaces the
+   CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
