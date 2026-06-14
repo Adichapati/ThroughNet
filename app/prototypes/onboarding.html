@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ThroughNet — Onboarding cover (paper-tear reveal prototype)</title>
+<!--
+  ThroughNet Phase A — Onboarding COVER + paper-tear reveal (ADR-151, milestone A3).
+  Aesthetic: "Living Blueprint / Paper-craft". The cover is a literal sheet of paper
+  showing the ThroughNet title; "Begin setup" tears it down a jagged seam into two
+  halves that crumple + lift away (GSAP), revealing the setup wizard behind it.
+  Self-contained (CDN GSAP + the shared design tokens inlined). Port target:
+  a `tn-onboarding` Lit component reusing src/styles/{tokens,app}.css.
+-->
+<style>
+  :root{
+    --paper:#F7F5F0; --paper-2:#F1ECE3; --paper-3:#FBF8F2;
+    --ink:#2B2A26; --ink-soft:#56524A; --edge:rgba(43,42,38,.48);
+    --clay:#D89A85; --slate:#93A7BE; --sage:#9FB0A2; --sand:#D8C09A;
+    --drop:3px 4px 0 -1px rgba(43,42,38,.18);
+    --f-display:"Fraunces", Georgia, serif;
+    --f-ui:"Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    --f-mono:"Space Mono", ui-monospace, monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; color:var(--ink); font-family:var(--f-ui); overflow:hidden;
+    /* aged-parchment ground: warm base + light centre + deep vignette + coarse stains + fine mottle */
+    background-color:#E7DDC9;
+    background-image:
+      radial-gradient(140% 112% at 50% 24%, rgba(255,252,244,.62), rgba(255,252,244,0) 50%),
+      radial-gradient(125% 125% at 50% 52%, rgba(66,50,28,0) 44%, rgba(66,50,28,.34) 100%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'><filter id='c'><feTurbulence type='fractalNoise' baseFrequency='0.004' numOctaves='2' seed='4'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23c)' opacity='0.22'/></svg>"),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='0.013' numOctaves='3' seed='9'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23m)' opacity='0.26'/></svg>");
+    background-size:cover,cover,800px 800px,520px 520px; background-repeat:no-repeat,no-repeat,repeat,repeat; }
+
+  /* crunchy paper tooth (screen-fixed grain) */
+  .grain{ position:fixed; inset:0; pointer-events:none; z-index:8; opacity:.5; mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/></svg>"); }
+
+  /* architectural corner frame */
+  .tn-frame{ position:fixed; inset:16px; pointer-events:none; z-index:7; border:1px solid var(--edge); }
+  .tn-frame::before,.tn-frame::after,.tn-frame>i::before,.tn-frame>i::after{
+    content:""; position:absolute; width:14px; height:14px; border:1.5px solid var(--ink); }
+  .tn-frame::before{ top:-1px; left:-1px; border-right:0; border-bottom:0; }
+  .tn-frame::after{ top:-1px; right:-1px; border-left:0; border-bottom:0; }
+  .tn-frame>i::before{ bottom:-1px; left:-1px; border-right:0; border-top:0; }
+  .tn-frame>i::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
+
+  /* ── the cover (two tearing halves share one jagged seam) ───── */
+  .cover{ position:fixed; inset:0; z-index:5; }
+  .cover-half{ position:absolute; inset:0; overflow:hidden; will-change:transform,opacity; }
+  .cover-inner{ position:absolute; inset:0; display:grid; place-items:center;
+    background-color:#E7DDC9;
+    background-image:
+      radial-gradient(140% 112% at 50% 24%, rgba(255,252,244,.66), rgba(255,252,244,0) 50%),
+      radial-gradient(125% 125% at 50% 52%, rgba(66,50,28,0) 44%, rgba(66,50,28,.34) 100%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'><filter id='c'><feTurbulence type='fractalNoise' baseFrequency='0.004' numOctaves='2' seed='4'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23c)' opacity='0.22'/></svg>"),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='0.013' numOctaves='3' seed='9'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23m)' opacity='0.26'/></svg>");
+    background-size:cover,cover,800px 800px,520px 520px; background-repeat:no-repeat,no-repeat,repeat,repeat; }
+  .cover-stack{ display:flex; flex-direction:column; align-items:center; transform:translateY(-7%); }
+
+  /* node-triangle emblem (echoes the diorama: TX + 2 RX + presence) */
+  .emblem{ width:74px; height:64px; margin-bottom:26px; }
+  .emblem line, .emblem path{ stroke:var(--ink); stroke-width:1.4; fill:none; }
+  .emblem .node{ fill:var(--paper-3); stroke:var(--ink); stroke-width:1.6; }
+  .emblem .tx{ fill:var(--sand); }
+  .emblem .rx{ fill:var(--slate); }
+  .emblem .pres{ fill:var(--clay); stroke:var(--ink); stroke-width:1.4; }
+
+  .title{ font-family:"Allura", var(--f-display); font-weight:400; font-size:132px; line-height:.8;
+    letter-spacing:0; color:var(--ink); margin:0; }
+  .title .net{ font-style:normal; font-weight:400; }
+  .rule{ width:54px; height:2px; background:var(--ink); margin:34px 0 16px; opacity:.85; }
+  .tagline{ font-family:var(--f-mono); font-size:11px; letter-spacing:.34em; text-transform:uppercase;
+    color:var(--ink-soft); }
+
+  /* crumple crease shading, fades in as a half lifts */
+  .crease{ position:absolute; inset:0; opacity:0; pointer-events:none; mix-blend-mode:multiply;
+    background:
+      repeating-linear-gradient(64deg, rgba(43,42,38,.11) 0 1.5px, transparent 1.5px 13px),
+      repeating-linear-gradient(-43deg, rgba(43,42,38,.09) 0 1.5px, transparent 1.5px 18px),
+      repeating-linear-gradient(16deg, rgba(43,42,38,.07) 0 1px, transparent 1px 10px),
+      conic-gradient(from 35deg at 58% 36%, rgba(43,42,38,.12), transparent 22%, rgba(255,255,255,.42) 48%, transparent 66%, rgba(43,42,38,.10) 88%, transparent),
+      radial-gradient(circle at 54% 42%, rgba(43,42,38,.16), transparent 56%),
+      radial-gradient(circle at 33% 70%, rgba(255,255,255,.5), transparent 50%); }
+
+  /* the "Begin setup" control (separate layer; fades on tear) */
+  .begin{ position:fixed; left:50%; top:63%; transform:translateX(-50%) rotate(-.5deg); z-index:6;
+    display:inline-flex; align-items:center; gap:12px; cursor:pointer;
+    background:var(--ink); color:var(--paper-3); border:1px solid var(--ink);
+    font-family:var(--f-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    padding:13px 22px; box-shadow:var(--drop); }
+  .begin:hover{ background:#1f1e1b; }
+  .begin .arr{ width:7px; height:7px; border-right:1.5px solid var(--paper-3);
+    border-top:1.5px solid var(--paper-3); transform:rotate(45deg); }
+  .cover-foot{ position:fixed; left:50%; bottom:42px; transform:translateX(-50%); z-index:6;
+    font-family:var(--f-mono); font-size:10px; letter-spacing:.24em; text-transform:uppercase;
+    color:var(--ink-soft); }
+
+  /* ── the setup wizard revealed behind the cover ─────────────── */
+  .wizard{ position:fixed; inset:0; z-index:1; display:grid; place-items:center;
+    opacity:0; transform:scale(.96); }
+  .wiz-col{ display:flex; flex-direction:column; align-items:center; gap:24px; width:min(560px,86vw); }
+  .wiz-rail{ display:flex; align-items:center; gap:11px; font-family:var(--f-mono); font-size:10px;
+    letter-spacing:.18em; text-transform:uppercase; color:var(--ink-soft); }
+  .wiz-rail b{ color:var(--ink); font-weight:400; }
+  .wiz-rail .pip{ width:7px; height:7px; border:1.5px solid var(--ink); transform:rotate(45deg);
+    background:var(--paper-3); }
+  .wiz-rail .pip.on{ background:var(--ink); }
+  .wiz-rail .seg{ width:18px; height:1px; background:var(--edge); }
+  .card{ width:100%; background:var(--paper-3); border:1px solid var(--ink); box-shadow:var(--drop); }
+  .card h2{ margin:0; background:var(--ink); color:var(--paper-3); font-family:var(--f-mono);
+    font-size:9px; font-weight:400; letter-spacing:.18em; text-transform:uppercase; padding:8px 16px; }
+  .card-body{ padding:26px 28px 24px; display:grid; grid-template-columns:120px 1fr; gap:24px; align-items:center; }
+  .vignette{ width:120px; height:120px; border:1px dashed var(--edge); display:grid; place-items:center;
+    background:var(--paper); }
+  .vignette svg{ width:78px; height:78px; }
+  .card h3{ font-family:var(--f-display); font-weight:600; font-size:23px; margin:0 0 8px; }
+  .card p{ font-size:13px; line-height:1.6; color:var(--ink-soft); margin:0 0 18px; }
+  .actions{ display:flex; gap:10px; }
+  .btn{ font-family:var(--f-mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+    padding:9px 16px; cursor:pointer; border:1px solid var(--ink); background:var(--paper-3); color:var(--ink); }
+  .btn.cta{ background:var(--ink); color:var(--paper-3); }
+  .btn.ghost{ background:transparent; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Allura&family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;1,9..144,500&family=Space+Grotesk:wght@400;500&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+
+<!-- revealed behind the cover: the setup wizard (step 1) -->
+<section class="wizard" id="wizard">
+  <div class="wiz-col">
+    <div class="wiz-rail">
+      <span class="pip on"></span><b>flash</b>
+      <span class="seg"></span><span class="pip"></span>connect
+      <span class="seg"></span><span class="pip"></span>place
+      <span class="seg"></span><span class="pip"></span>calibrate
+      <span class="seg"></span><span class="pip"></span>done
+    </div>
+    <div class="card">
+      <h2>set up · step 1 of 5 · add a node</h2>
+      <div class="card-body">
+        <div class="vignette">
+          <svg viewBox="0 0 80 80" fill="none">
+            <rect x="22" y="14" width="36" height="52" rx="3" stroke="#2B2A26" stroke-width="1.6" fill="#FBF8F2"/>
+            <rect x="29" y="22" width="22" height="16" rx="1.5" fill="#AFC0D2" stroke="#2B2A26" stroke-width="1.2"/>
+            <line x1="34" y1="46" x2="46" y2="46" stroke="#2B2A26" stroke-width="1.2"/>
+            <line x1="34" y1="52" x2="46" y2="52" stroke="#2B2A26" stroke-width="1.2"/>
+            <path d="M40 66 L40 74" stroke="#2B2A26" stroke-width="1.6"/>
+            <path d="M33 74 L47 74" stroke="#2B2A26" stroke-width="1.6"/>
+          </svg>
+        </div>
+        <div>
+          <h3>Add your first node</h3>
+          <p>Plug an ESP32-S3 into this computer with a USB cable. ThroughNet detects it and flashes the sensing firmware — the first board becomes your TX illuminator.</p>
+          <div class="actions">
+            <button class="btn ghost">back</button>
+            <button class="btn cta">scan for board ▸</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- the cover: two halves sharing one jagged torn seam -->
+<div class="cover" id="cover">
+  <div class="cover-half" id="half-l">
+    <div class="cover-inner">
+      <div class="cover-stack">
+        <svg class="emblem" viewBox="0 0 74 64">
+          <path d="M37 12 L12 52 L62 52 Z"/>
+          <circle class="node tx"  cx="37" cy="12" r="5.4"/>
+          <circle class="node rx"  cx="12" cy="52" r="5.4"/>
+          <circle class="node rx"  cx="62" cy="52" r="5.4"/>
+          <rect class="pres" x="32.5" y="33" width="9" height="9" transform="rotate(45 37 37.5)"/>
+        </svg>
+        <h1 class="title">Through<span class="net">net</span></h1>
+        <div class="rule"></div>
+        <div class="tagline">camera-free presence · motion · breathing</div>
+      </div>
+    </div>
+    <div class="crease"></div>
+  </div>
+  <div class="cover-half" id="half-r">
+    <div class="cover-inner">
+      <div class="cover-stack">
+        <svg class="emblem" viewBox="0 0 74 64">
+          <path d="M37 12 L12 52 L62 52 Z"/>
+          <circle class="node tx"  cx="37" cy="12" r="5.4"/>
+          <circle class="node rx"  cx="12" cy="52" r="5.4"/>
+          <circle class="node rx"  cx="62" cy="52" r="5.4"/>
+          <rect class="pres" x="32.5" y="33" width="9" height="9" transform="rotate(45 37 37.5)"/>
+        </svg>
+        <h1 class="title">Through<span class="net">net</span></h1>
+        <div class="rule"></div>
+        <div class="tagline">camera-free presence · motion · breathing</div>
+      </div>
+    </div>
+    <div class="crease"></div>
+  </div>
+  <button class="begin" id="begin"><span>Begin setup</span><span class="arr"></span></button>
+  <div class="cover-foot">tear to begin</div>
+</div>
+
+<div class="grain"></div>
+
+<script>
+  // ── build one jagged seam, shared by both halves so the rip interlocks ──
+  // deterministic zigzag around x=50%, denser jitter = a hand-torn edge.
+  const seam = [
+    [50.0,0],[51.6,7],[48.3,14],[52.4,21],[49.0,28],[51.8,35],[47.6,42],
+    [52.2,49],[48.8,56],[51.4,63],[47.9,70],[52.6,77],[49.2,84],[51.0,91],[50.0,100]
+  ];
+  const seamPts = seam.map(([x,y]) => `${x}% ${y}%`).join(', ');
+  document.getElementById('half-l').style.clipPath = `polygon(0% 0%, ${seamPts}, 0% 100%)`;
+  document.getElementById('half-r').style.clipPath = `polygon(100% 0%, ${seamPts}, 100% 100%)`;
+
+  // ── idle: the sheet sways gently, like hung paper (killed on tear) ──
+  const sway = gsap.fromTo('#cover',
+    { rotation:-0.6, x:-5, y:-2 },
+    { rotation:0.6, x:5, y:2, duration:4.6, ease:'sine.inOut', yoyo:true, repeat:-1,
+      transformOrigin:'50% 6%' });
+
+  // ── the tear: rip → buckle → ball up tight → fling off, revealing the wizard ──
+  let torn = false;
+  function tear(){
+    if(torn) return; torn = true;
+    const L = document.getElementById('half-l'), R = document.getElementById('half-r');
+    sway.kill();
+    const tl = gsap.timeline({ defaults:{ ease:'power3.in' } });
+    tl.to('#cover', { rotation:0, x:0, y:0, duration:0.16, ease:'power2.out' }, 0);
+
+    // the wizard breathes up into view behind
+    gsap.to('#wizard', { opacity:1, scale:1, duration:1.15, ease:'power2.out' });
+
+    // begin button + footer drop away first
+    tl.to('#begin', { opacity:0, y:10, duration:0.2, ease:'power2.in' }, 0)
+      .to('.cover-foot', { opacity:0, duration:0.18 }, 0);
+
+    // each half balls up toward its outer-top corner
+    gsap.set(L, { transformOrigin:'24% 16%' });
+    gsap.set(R, { transformOrigin:'76% 16%' });
+
+    // 1) the seam cracks open (rip jolt)
+    tl.to(L, { xPercent:-2.6, rotation:-1.6, duration:0.14, ease:'power2.out' }, 0.06)
+      .to(R, { xPercent: 2.6, rotation: 1.6, duration:0.14, ease:'power2.out' }, 0.06);
+
+    // 2) the paper buckles — creases bite in
+    tl.to(L, { scale:0.8, rotation:-12, skewX:8, duration:0.2, ease:'power2.in' }, 0.22)
+      .to(R, { scale:0.8, rotation:12, skewX:-8, duration:0.2, ease:'power2.in' }, 0.24)
+      .to('#half-l .crease', { opacity:0.6, duration:0.2 }, 0.22)
+      .to('#half-r .crease', { opacity:0.6, duration:0.2 }, 0.24);
+
+    // 3) ball up tight + fling off the top, creases crushing to full
+    tl.to(L, { xPercent:-40, yPercent:-46, rotation:-82, scale:0.07, skewX:16, opacity:0, duration:0.82 }, 0.4)
+      .to(R, { xPercent: 40, yPercent:-42, rotation: 82, scale:0.07, skewX:-16, opacity:0, duration:0.82 }, 0.46)
+      .to('#half-l .crease', { opacity:1, duration:0.5 }, 0.4)
+      .to('#half-r .crease', { opacity:1, duration:0.5 }, 0.46)
+      .add(()=>{ document.getElementById('cover').style.display='none'; }, 1.32);
+  }
+  document.getElementById('begin').addEventListener('click', tear);
+  // expose for screenshot automation
+  window.__tear = tear;
+</script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+/* ThroughNet onboarding — the cover (paper-tear reveal) + the setup wizard.
+   Scoped under <tn-onboarding> (light DOM) so nothing leaks into the live view.
+   Tokens from tokens.css; the architectural frame (.tn-frame) from app.css. */
+
+/* aged-parchment ground — warm base + light centre + deep vignette + coarse stains + fine mottle */
+tn-onboarding, tn-onboarding .cover-inner {
+  background-color:#E7DDC9;
+  background-image:
+    radial-gradient(140% 112% at 50% 24%, rgba(255,252,244,.64), rgba(255,252,244,0) 50%),
+    radial-gradient(125% 125% at 50% 52%, rgba(66,50,28,0) 44%, rgba(66,50,28,.34) 100%),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'><filter id='c'><feTurbulence type='fractalNoise' baseFrequency='0.004' numOctaves='2' seed='4'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23c)' opacity='0.22'/></svg>"),
+    url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='520' height='520'><filter id='m'><feTurbulence type='fractalNoise' baseFrequency='0.013' numOctaves='3' seed='9'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23m)' opacity='0.26'/></svg>");
+  background-size:cover,cover,800px 800px,520px 520px;
+  background-repeat:no-repeat,no-repeat,repeat,repeat;
+}
+tn-onboarding { position:fixed; inset:0; display:block; overflow:hidden; }
+
+/* ── the cover: two halves sharing one jagged torn seam ───────── */
+tn-onboarding .cover{ position:fixed; inset:0; z-index:5; }
+tn-onboarding .cover-half{ position:absolute; inset:0; overflow:hidden; will-change:transform,opacity; }
+tn-onboarding .cover-inner{ position:absolute; inset:0; display:grid; place-items:center; }
+tn-onboarding .cover-stack{ display:flex; flex-direction:column; align-items:center; transform:translateY(-7%); }
+
+tn-onboarding .emblem{ width:74px; height:64px; margin-bottom:26px; }
+tn-onboarding .emblem path{ stroke:var(--ink); stroke-width:1.4; fill:none; }
+tn-onboarding .emblem .node{ stroke:var(--ink); stroke-width:1.6; }
+tn-onboarding .emblem .tx{ fill:var(--sand); }
+tn-onboarding .emblem .rx{ fill:var(--slate); }
+tn-onboarding .emblem .pres{ fill:var(--clay); stroke:var(--ink); stroke-width:1.4; }
+
+tn-onboarding .title{ font-family:"Allura", var(--f-display); font-weight:400; font-size:132px;
+  line-height:.8; letter-spacing:0; color:var(--ink); margin:0; }
+tn-onboarding .rule{ width:54px; height:2px; background:var(--ink); margin:34px 0 16px; opacity:.85; }
+tn-onboarding .tagline{ font-family:var(--f-mono); font-size:11px; letter-spacing:.34em;
+  text-transform:uppercase; color:var(--ink-soft); }
+
+tn-onboarding .crease{ position:absolute; inset:0; opacity:0; pointer-events:none; mix-blend-mode:multiply;
+  background:
+    repeating-linear-gradient(64deg, rgba(43,42,38,.11) 0 1.5px, transparent 1.5px 13px),
+    repeating-linear-gradient(-43deg, rgba(43,42,38,.09) 0 1.5px, transparent 1.5px 18px),
+    repeating-linear-gradient(16deg, rgba(43,42,38,.07) 0 1px, transparent 1px 10px),
+    conic-gradient(from 35deg at 58% 36%, rgba(43,42,38,.12), transparent 22%, rgba(255,255,255,.42) 48%, transparent 66%, rgba(43,42,38,.10) 88%, transparent),
+    radial-gradient(circle at 54% 42%, rgba(43,42,38,.16), transparent 56%),
+    radial-gradient(circle at 33% 70%, rgba(255,255,255,.5), transparent 50%); }
+
+tn-onboarding .begin{ position:fixed; left:50%; top:63%; transform:translateX(-50%) rotate(-.5deg); z-index:6;
+  display:inline-flex; align-items:center; gap:12px; cursor:pointer;
+  background:var(--ink); color:var(--paper-3); border:1px solid var(--ink);
+  font-family:var(--f-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+  padding:13px 22px; box-shadow:var(--drop); }
+tn-onboarding .begin:hover{ background:#1f1e1b; }
+tn-onboarding .begin .arr{ width:7px; height:7px; border-right:1.5px solid var(--paper-3);
+  border-top:1.5px solid var(--paper-3); transform:rotate(45deg); }
+tn-onboarding .cover-foot{ position:fixed; left:50%; bottom:42px; transform:translateX(-50%); z-index:6;
+  font-family:var(--f-mono); font-size:10px; letter-spacing:.24em; text-transform:uppercase; color:var(--ink-soft); }
+
+/* ── the wizard revealed behind the cover ─────────────────────── */
+tn-onboarding .wizard{ position:fixed; inset:0; z-index:1; display:grid; place-items:center;
+  opacity:0; transform:scale(.96); }
+tn-onboarding .wiz-col{ display:flex; flex-direction:column; align-items:center; gap:24px; width:min(580px,88vw); }
+tn-onboarding .wiz-rail{ display:flex; align-items:center; gap:10px; font-family:var(--f-mono); font-size:10px;
+  letter-spacing:.16em; text-transform:uppercase; color:var(--ink-soft); }
+tn-onboarding .wiz-rail b{ color:var(--ink); font-weight:400; }
+tn-onboarding .wiz-rail .pip{ width:7px; height:7px; border:1.5px solid var(--ink); transform:rotate(45deg); background:var(--paper-3); }
+tn-onboarding .wiz-rail .pip.on{ background:var(--ink); }
+tn-onboarding .wiz-rail .pip.done{ background:var(--clay); }
+tn-onboarding .wiz-rail .seg{ width:16px; height:1px; background:var(--edge); }
+
+tn-onboarding .card{ width:100%; background:var(--paper-3); border:1px solid var(--ink); box-shadow:var(--drop); }
+tn-onboarding .card h2{ margin:0; background:var(--ink); color:var(--paper-3); font-family:var(--f-mono);
+  font-size:9px; font-weight:400; letter-spacing:.18em; text-transform:uppercase; padding:8px 16px; }
+tn-onboarding .card-body{ padding:26px 28px 24px; display:grid; grid-template-columns:120px 1fr; gap:24px; align-items:center; }
+tn-onboarding .card-body.wide{ grid-template-columns:1fr; }
+tn-onboarding .vignette{ width:120px; height:120px; border:1px dashed var(--edge); display:grid; place-items:center; background:var(--paper); }
+tn-onboarding .vignette svg{ width:78px; height:78px; }
+tn-onboarding .card h3{ font-family:var(--f-display); font-weight:600; font-size:23px; margin:0 0 8px; }
+tn-onboarding .card p{ font-size:13px; line-height:1.6; color:var(--ink-soft); margin:0 0 18px; }
+tn-onboarding .actions{ display:flex; gap:10px; margin-top:4px; }
+tn-onboarding .btn{ font-family:var(--f-mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+  padding:9px 16px; cursor:pointer; border:1px solid var(--ink); background:var(--paper-3); color:var(--ink); }
+tn-onboarding .btn.cta{ background:var(--ink); color:var(--paper-3); }
+tn-onboarding .btn.ghost{ background:transparent; }
+tn-onboarding .btn:disabled{ opacity:.4; cursor:default; }
+tn-onboarding .spacer{ flex:1; }
+
+/* form bits */
+tn-onboarding .field{ margin-bottom:13px; }
+tn-onboarding .field label{ display:block; font-family:var(--f-mono); font-size:9px; letter-spacing:.16em;
+  text-transform:uppercase; color:var(--ink-soft); margin-bottom:5px; }
+tn-onboarding .field input, tn-onboarding .field select{ width:100%; font-family:var(--f-ui); font-size:13px;
+  padding:9px 11px; background:var(--paper); border:1px solid var(--ink); color:var(--ink); }
+
+/* preflight checklist */
+tn-onboarding .check{ display:flex; align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--edge); }
+tn-onboarding .check:last-child{ border-bottom:0; }
+tn-onboarding .check .mk{ width:16px; height:16px; display:grid; place-items:center; border:1.5px solid var(--ink); flex:none; }
+tn-onboarding .check.ok .mk{ background:var(--sage); }
+tn-onboarding .check.warn .mk{ background:var(--sand); }
+tn-onboarding .check .lbl{ font-size:13px; }
+tn-onboarding .check .sub{ font-family:var(--f-mono); font-size:10px; color:var(--ink-soft); margin-top:2px; }
+tn-onboarding code.cmd{ font-family:var(--f-mono); font-size:11px; background:var(--paper-2);
+  border:1px solid var(--edge); padding:2px 7px; color:var(--ink); }
+
+/* fleet list + link rssi bars */
+tn-onboarding .fleet{ display:flex; flex-direction:column; gap:8px; margin:4px 0 16px; }
+tn-onboarding .fleet .nd{ display:flex; align-items:center; gap:11px; font-size:12px; }
+tn-onboarding .fleet .gem{ width:11px; height:11px; transform:rotate(45deg); border:1.5px solid var(--ink); flex:none; }
+tn-onboarding .fleet .gem.tx{ background:var(--sand); } tn-onboarding .fleet .gem.rx{ background:var(--slate); }
+tn-onboarding .fleet .role{ font-family:var(--f-mono); font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); }
+tn-onboarding .link{ display:flex; align-items:center; gap:12px; margin:9px 0; }
+tn-onboarding .link .nm{ font-family:var(--f-mono); font-size:10px; letter-spacing:.1em; width:74px; color:var(--ink); }
+tn-onboarding .bar{ flex:1; height:7px; background:var(--paper-2); border:1px solid var(--ink); position:relative; }
+tn-onboarding .bar > i{ position:absolute; inset:0 auto 0 0; background:var(--sage); }
+tn-onboarding .link .db{ font-family:var(--f-mono); font-size:10px; color:var(--ink-soft); width:52px; text-align:right; }
+
+/* placement diagram + progress */
+tn-onboarding .diagram{ width:100%; border:1px solid var(--edge); background:var(--paper); padding:10px; margin-bottom:16px; }
+tn-onboarding .progress{ width:100%; height:8px; background:var(--paper-2); border:1px solid var(--ink); position:relative; margin:6px 0 16px; }
+tn-onboarding .progress > i{ position:absolute; inset:0 auto 0 0; background:var(--clay); width:0; }
+tn-onboarding .big-emblem{ width:120px; height:104px; }
+tn-onboarding .big-emblem path{ stroke:var(--ink); stroke-width:1.4; fill:none; }

@@ -7,18 +7,30 @@ import { LitElement, html, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { defaultState, fusedState, type SensingState } from './live/types';
 import './live/tn-live-view';
+import './onboarding/tn-onboarding';
 
 @customElement('tn-app')
 export class TnApp extends LitElement {
   protected createRenderRoot() { return this; }
 
   @state() private st: SensingState = { ...defaultState };
+  // first run shows onboarding; a configured system lands on the live view.
+  // (?view=live jumps straight to the home for dev/screenshots.)
+  @state() private view: 'onboarding' | 'live' =
+    new URLSearchParams(location.search).get('view') === 'live' ? 'live' : 'onboarding';
 
   private set(patch: Partial<SensingState>) { this.st = { ...this.st, ...patch }; }
 
   private get isBreathing() { return this.st.present && !this.st.moving && this.st.breathing; }
 
   render() {
+    if (this.view === 'onboarding') {
+      return html`<tn-onboarding @finish=${() => { this.view = 'live'; }}></tn-onboarding>`;
+    }
+    return this.renderLive();
+  }
+
+  private renderLive(): TemplateResult {
     const fused = fusedState(this.st);
     const title = this.st.present ? (this.st.moving ? 'Present · Moving' : 'Present · Still') : 'Absent';
     const sub = this.isBreathing ? `${this.st.bpm.toFixed(1)} bpm · breathing`
