@@ -17,6 +17,8 @@ set(SRCS
     "c6_sync_espnow.c"
     # ThroughNet Phase 1 — fixed-rate OFDM beacon illuminator (role=tx)
     "tx_beacon.c"
+    # ThroughNet R1 — mDNS server discovery (router/IP-change resilience)
+    "mdns_resolver.c"
     # ADR-110 B1/B2 unblock — soft-AP HE/TWT (C6-only when enabled)
     "c6_softap_he.c"
 )
@@ -40,6 +42,7 @@ set(REQUIRES
     driver
     lwip
     mbedtls
+    mdns                  # ThroughNet R1 — server discovery (espressif/mdns managed component)
 )
 
 # ADR-110: C6-only components — pulled in when building for esp32c6.

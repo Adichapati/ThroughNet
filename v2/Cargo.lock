@@ -11059,6 +11059,7 @@ dependencies = [
  "clap",
  "criterion",
  "futures-util",
+ "mdns-sd",
  "midstreamer-attractor",
  "midstreamer-temporal-compare",
  "proptest",

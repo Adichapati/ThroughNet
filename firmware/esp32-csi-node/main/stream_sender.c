@@ -32,6 +32,16 @@ static uint32_t s_enomem_suppressed = 0;
 
 static int sender_init_internal(const char *ip, uint16_t port)
 {
+    /* Re-init safe: close any existing socket first so the ThroughNet R1 mDNS
+     * watch can re-point the sender at a new server IP without leaking the fd
+     * or stranding sends in ENOMEM backoff. */
+    if (s_sock >= 0) {
+        close(s_sock);
+        s_sock = -1;
+    }
+    s_backoff_until_us = 0;
+    s_enomem_suppressed = 0;
+
     s_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s_sock < 0) {
         ESP_LOGE(TAG, "Failed to create socket: errno %d", errno);

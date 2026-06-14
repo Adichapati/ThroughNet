@@ -117,7 +117,47 @@ Acceptance:
 - Motion: still vs moving discriminated >90% on 5 s windows.
 - Breathing: rate within ±2 BPM of a manual count, for a still subject ≤3 m from a link.
 
+### Phase R — Robustness foundation (controlled-link product hardening) ← CURRENT
+*Goal: the proven detection stack survives real-world change — adding nodes, and the
+host/router changing IP — before any product UI is built. Direction set 2026-06-13:
+build our own app from scratch (not the inherited RuView Tauri app), mDNS for discovery,
+robustness first.*
+
+**R1 — mDNS service discovery (router/IP-change resilience).** Boards push CSI to a static
+NVS `target_ip`; when the host IP changes (DHCP / new router) streaming silently dies — the
+exact fragility live bring-up hit. Fix: the server advertises, boards resolve at runtime,
+the static `target_ip` stays as fallback so we never regress.
+- *Server:* add `mdns-sd`, register `_throughnet._udp.local` with the host LAN IP + UDP port
+  (5005), re-announce on IP change. The advertiser sits beside the existing `0.0.0.0:5005`
+  receiver.
+- *Firmware:* add the `espressif/mdns` managed component; after WiFi connect, resolve
+  `_throughnet._udp.local` → feed `stream_sender_init_with(ip,port)` (`stream_sender.c:61`,
+  called from `main.c:269`); a periodic re-resolve re-inits the sender on IP change; fall
+  back to NVS `target_ip` if mDNS yields nothing within a timeout. Log the winning path.
+- *Scope boundary (document honestly):* mDNS removes IP-tracking fragility on a given LAN.
+  A genuinely new SSID/password still needs WiFi re-provision — the app's setup flow makes
+  that a 30-second job; mDNS cannot solve it.
+
+**R2 — multi-node hardening (adding nodes must not break it).** Validated topology is 1 TX
+illuminator + N radio-silent RX, so adding an RX needs no reconfiguration of existing nodes
+(no inter-node TDM), and the server already keys nodes in a dynamic map. Work: auto-assign
+the next-free `node_id` + role=RX + the TX's `filter_mac` at provision time (id collisions
+are the one real risk); verify baseline / OR-fusion / best-link breathing / eviction carry
+no hidden 2-/3-node assumptions for N≥3.
+
+**R3 — prove the robustness (acceptance).** Two scripted checks in `tools/gate/`:
+- *IP-change survival*: with presence live, force the host IP to change (renew DHCP / restart
+  router); assert streaming auto-recovers within N s via mDNS re-resolve.
+- *Add-a-node*: provision + power a new RX; assert it appears in `/throughnet/status` as a new
+  node and joins fusion without disturbing existing nodes.
+
+Acceptance: both gates pass on the real KANAYAM mesh; the Phase-2 + breathing gates re-run
+green with the new discovery path (no detection regression).
+
 ### Phase 3 — "Plug in and go" setup tool
+*Superseded 2026-06-13: setup is baked into the app (Phase 4 / Phase A), not a standalone
+CLI — but the mechanics below (auto-detect, flash, provision, doctor, calibrate, run) remain
+the requirements; they live inside the app's onboarding flow.*
 *Goal: a non-expert goes from boxed boards to live dashboard in 15 minutes.*
 
 1. **`throughnet` CLI** (Python first — esptool/nvs-gen already work in our venv;
@@ -138,8 +178,14 @@ Acceptance:
 Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 `pipx install throughnet && throughnet setup`, no manual steps. (Windows/macOS later.)
 
-### Phase 4 — Product app & packaging
+### Phase 4 — Product app & packaging (a.k.a. Phase A — our own app)
 *Goal: it looks and feels like a product, not a research repo.*
+*Stack decision reopened 2026-06-13: a native shell is required for in-app serial
+flash/provision (browsers can't do serial), so a research spike + ADR picks the stack
+(Tauri v2 vs. web-UI + thin native helper vs. …) and defines a ThroughNet design system.
+Build our own screens/design; reference the inherited RuView app (`wifi-densepose-desktop`)
+for reusable mechanics only (NVS provisioning format, esptool flashing, `mdns-sd` usage),
+never its UI/branding.*
 
 1. **Full UI overhaul — the inherited `ui/` is demo-ware and gets replaced, not
    patched.** The Observatory's skeleton/heatmap theatrics are decoration driven by
@@ -229,7 +275,11 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 ***PHASE 2 COMPLETE** (2026-06-13) — all four acceptance gates pass on real hardware:
 presence FP 0%, detection 100%, latency 0 s, motion still-vs-walking 100% — including
 the hardest case (a still subject breathing on a link line). Detection layer is locked.
-Current front:*
+
+**DIRECTION (set 2026-06-13):** with detection proven, the work pivots from research to
+product. Build our **own** app from scratch (our design; the inherited RuView Tauri app is
+reference-only) and **harden first** — mDNS discovery + multi-node robustness — before any
+UI. See **Phase R** above. Current front:*
 1. **Phase 2.4 — breathing — VALIDATED ON HARDWARE (2026-06-13).** `breathing.rs`:
    0.15–0.5 Hz bandpass → in-band bin selection → DFT spectral peak (interior
    0.20–0.45 Hz, parabolic-interpolated) → BPM, prominence confidence, measured-rate,
@@ -241,8 +291,13 @@ Current front:*
    absent misfires. Best-link picker correctly leaned on the stronger receiver (node 2);
    the weaker link rarely cleared the confidence floor — a geometry note, not a detector
    fault. `validate.py --breathing [--breathing-truth N]` is the canonical harness.
-2. **Phase 3 — `throughnet` setup CLI** (flash → provision → verify → run + `doctor`).
-3. **Second-room validation (R5)** — re-run `validate.py` in another room before
+2. **Phase R — robustness foundation (CURRENT).** R1 mDNS service discovery (router/IP-change
+   resilience), R2 multi-node auto-id, R3 scripted resilience gates. Full detail in **Phase R**
+   above.
+3. **Phase A — our own app** (after R): research spike → ADR for app stack + ThroughNet design
+   system → build setup-baked-in + a polished presence/motion/breathing UI on
+   `/throughnet/status`, Linux first. Replaces the CLI-first framing of Phase 3.
+4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
 *Done 2026-06-13: state-machine debounce, validation harness (`validate.py`), the

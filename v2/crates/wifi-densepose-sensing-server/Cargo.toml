@@ -68,6 +68,12 @@ ureq      = { version = "2", default-features = false, features = ["tls", "json"
 sha2      = "0.10"
 thiserror = "1"
 
+# ThroughNet R1 (ROADMAP Phase R) — mDNS advertiser. The server registers
+# `_throughnet._udp.local` so ESP32 nodes resolve the CSI ingestion endpoint by
+# name instead of a hardcoded IP, surviving host/router IP changes. Same crate +
+# version already vendored in-tree (cog-ha-matter, wifi-densepose-desktop).
+mdns-sd = "0.11"
+
 # ADR-115 §3.8 — MQTT publisher (HA-DISCO).
 # Gated behind the `mqtt` feature so the default binary stays small for users
 # who don't need Home Assistant integration. `rumqttc` is the chosen Rust MQTT

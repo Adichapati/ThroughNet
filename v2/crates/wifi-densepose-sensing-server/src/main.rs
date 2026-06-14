@@ -13,6 +13,7 @@ mod adaptive_classifier;
 pub mod cli;
 pub mod csi;
 mod field_bridge;
+mod mdns_advertiser; // ThroughNet R1: advertise `_throughnet._udp.local` for IP-change resilience
 mod multistatic_bridge;
 pub mod pose;
 mod breathing;
@@ -6937,11 +6938,18 @@ async fn main() {
         throughnet_capture: None,
     }));
 
+    // ThroughNet R1: mDNS advertiser handle. Bound for the lifetime of `main`
+    // (the server runs until the process exits), so the `_throughnet._udp.local`
+    // registration stays live. Only started for the esp32 source — it advertises
+    // the CSI ingestion endpoint, which only that source serves.
+    let mut _mdns_advertiser = None;
+
     // Start background tasks based on source
     match source {
         "esp32" => {
             tokio::spawn(udp_receiver_task(state.clone(), args.udp_port));
             tokio::spawn(broadcast_tick_task(state.clone(), args.tick_ms));
+            _mdns_advertiser = mdns_advertiser::start(args.udp_port);
         }
         "wifi" => {
             tokio::spawn(windows_wifi_task(state.clone(), args.tick_ms));

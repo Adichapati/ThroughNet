@@ -3,6 +3,9 @@ CLAUDE.local.md
 
 # ESP32 firmware build artifacts and local config (contains WiFi credentials)
 firmware/esp32-csi-node/build/
+# Containerized (espressif/idf Docker) build dir + shadow managed_components
+firmware/esp32-csi-node/build_docker/
+firmware/esp32-csi-node/build_docker_mc/
 firmware/esp32-csi-node/sdkconfig
 firmware/esp32-csi-node/sdkconfig.defaults
 firmware/esp32-csi-node/sdkconfig.old

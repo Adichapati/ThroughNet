@@ -38,6 +38,7 @@
 #include "c6_lp_core.h"            /* ADR-110: LP-core hibernation (no-op on S3) */
 #include "c6_sync_espnow.h"        /* ADR-110 D1 workaround: ESP-NOW sync */
 #include "tx_beacon.h"             /* ThroughNet Phase 1: role=tx beacon illuminator */
+#include "mdns_resolver.h"         /* ThroughNet R1: resolve server via mDNS (IP-change resilience) */
 #include "c6_softap_he.h"          /* ADR-110 B1/B2: HE/TWT soft-AP (no-op when disabled) */
 #ifdef CONFIG_CSI_MOCK_ENABLED
 #include "mock_csi.h"
@@ -262,14 +263,52 @@ void app_main(void)
     }
 #endif
 
-    /* Initialize UDP sender with runtime target */
+    /* Initialize UDP sender with runtime target.
+     *
+     * ThroughNet R1 (ROADMAP Phase R): resolve the server via mDNS
+     * (`_throughnet._udp.local`) so a host/router IP change doesn't silently
+     * kill streaming. The static NVS target_ip is the fallback — if mDNS yields
+     * nothing within the timeout we use it, preserving the pre-mDNS behavior.
+     * A background watch re-points the sender if the server's IP later changes. */
 #ifdef CONFIG_CSI_MOCK_SKIP_WIFI_CONNECT
     ESP_LOGI(TAG, "Mock CSI mode: skipping UDP sender init (no network)");
 #else
-    if (stream_sender_init_with(g_nvs_config.target_ip, g_nvs_config.target_port) != 0) {
+    char     sender_ip[MDNS_RESOLVER_IP_BUF];
+    uint16_t sender_port = g_nvs_config.target_port;
+    bool     via_mdns = false;
+
+    if (mdns_resolver_init() == ESP_OK) {
+        char     mip[MDNS_RESOLVER_IP_BUF];
+        uint16_t mport = 0;
+        if (mdns_resolver_query(mip, sizeof(mip), &mport, 3000)) {
+            strncpy(sender_ip, mip, sizeof(sender_ip) - 1);
+            sender_ip[sizeof(sender_ip) - 1] = '\0';
+            sender_port = mport;
+            via_mdns = true;
+        } else {
+            ESP_LOGW(TAG, "mDNS found no server; falling back to NVS target_ip %s",
+                     g_nvs_config.target_ip);
+        }
+    } else {
+        ESP_LOGW(TAG, "mDNS init failed; using NVS target_ip %s", g_nvs_config.target_ip);
+    }
+
+    if (!via_mdns) {
+        strncpy(sender_ip, g_nvs_config.target_ip, sizeof(sender_ip) - 1);
+        sender_ip[sizeof(sender_ip) - 1] = '\0';
+        sender_port = g_nvs_config.target_port;
+    }
+
+    if (stream_sender_init_with(sender_ip, sender_port) != 0) {
         ESP_LOGE(TAG, "Failed to initialize UDP sender");
         return;
     }
+    ESP_LOGI(TAG, "UDP sender target: %s:%u (%s)", sender_ip, sender_port,
+             via_mdns ? "mDNS" : "NVS fallback");
+
+    /* Keep the sender pointed at the server across IP changes. RX-only by
+     * placement — the TX role loops forever above and never reaches here. */
+    mdns_resolver_start_watch(sender_ip, sender_port, 30000);
 #endif
 
     /* Initialize CSI collection */

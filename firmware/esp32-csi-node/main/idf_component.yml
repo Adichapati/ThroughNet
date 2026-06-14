@@ -11,3 +11,8 @@ dependencies:
 
   ## Onboard WS2812 LED Disabling
   espressif/led_strip: "^3.0.0"
+
+  ## ThroughNet R1 (ROADMAP Phase R): resolve the sensing server via mDNS
+  ## (`_throughnet._udp.local`) so a host/router IP change doesn't kill the
+  ## CSI stream. RX nodes query this; the NVS target_ip stays as fallback.
+  espressif/mdns: "^1.2"
