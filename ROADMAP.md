@@ -331,9 +331,13 @@ UI. See **Phase R** above. Current front:*
 3. **Phase A — our own app (CURRENT).** Research spike + stack **DECIDED (ADR-151:
    server-as-shell)** 2026-06-14 — one self-contained sensing-server binary serving an
    embedded from-scratch Lit UI + localhost `/api/v1/setup/*` (native `espflash` flash +
-   `--auto` provision), app-like launch, doctor preflight. **Next: milestone A1** — `app/`
-   (Vite + Lit + TS) design system + live presence/motion/breathing dashboard on
-   `/throughnet/status` (now also surfaces per-node `stale`) + `/ws/sensing`, Linux first.
+   `--auto` provision), app-like launch, doctor preflight. **A1 in progress** — `app/`
+   scaffolded (Vite + Lit + TS); the "Living Blueprint / Paper-craft" design system
+   (tokens + chrome kit) and the `tn-live-view` diorama (three.js presence/motion/breathing,
+   ported from the approved `app/prototypes/live-view.html`) are landed, mock-driven via a
+   control panel that stands in for `/throughnet/status` (now also surfaces per-node `stale`)
+   + `/ws/sensing`. Remaining A1: wire the real transport + the product cards (node health,
+   calibration status, event log, honest empty/degraded states), Linux first.
    Then A2 embed (`rust-embed`), A3 in-app setup, A4 single-binary packaging (ADR-151 §7).
    Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before

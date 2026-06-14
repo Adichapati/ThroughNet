@@ -1,0 +1,40 @@
+/* ThroughNet design tokens — "Living Blueprint / Paper-craft".
+   CSS custom properties live on :root so they inherit through shadow boundaries
+   too (any future shadow-DOM components pick them up for free). */
+:root {
+  /* paper + ink */
+  --paper: #F7F5F0;
+  --paper-2: #F1ECE3;
+  --paper-3: #FBF8F2;
+  --ink: #2B2A26;
+  --ink-soft: #56524A;
+  --line: #2B2A26;
+  --edge: rgba(43, 42, 38, 0.48);
+
+  /* palette — mirrors the 3D forms */
+  --clay: #D89A85;   /* presence */
+  --slate: #93A7BE;  /* RX nodes */
+  --sage: #9FB0A2;   /* flora / stone */
+  --sand: #D8C09A;   /* TX node */
+
+  /* placed-paper drop shadow */
+  --drop: 3px 4px 0 -1px rgba(43, 42, 38, 0.18);
+
+  /* type */
+  --f-display: "Fraunces", Georgia, serif;
+  --f-ui: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --f-mono: "Space Mono", ui-monospace, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-ui);
+  overflow: hidden;
+}
+
+tn-app { display: block; }

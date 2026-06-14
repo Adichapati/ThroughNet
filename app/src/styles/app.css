@@ -1,0 +1,90 @@
+/* ThroughNet chrome kit — the paper-craft 2D component classes, extracted from
+   the live-view prototype. Rendered into light DOM by the app components so
+   these global classes apply directly. Tokens come from tokens.css. */
+
+/* ── live-view canvas ──────────────────────────────────────── */
+.tn-canvas { position: fixed; inset: 0; display: block; z-index: 0; }
+
+/* ── 3D-anchored label layer ───────────────────────────────── */
+.tn-tags { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+
+/* ── overlay + architectural corner frame ──────────────────── */
+.overlay { position: fixed; inset: 0; pointer-events: none; z-index: 4; }
+.tn-frame { position: fixed; inset: 16px; pointer-events: none; z-index: 3; border: 1px solid var(--edge); }
+.tn-frame::before, .tn-frame::after, .tn-frame > i::before, .tn-frame > i::after {
+  content: ""; position: absolute; width: 14px; height: 14px; border: 1.5px solid var(--ink); }
+.tn-frame::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+.tn-frame::after { top: -1px; right: -1px; border-left: 0; border-bottom: 0; }
+.tn-frame > i::before { bottom: -1px; left: -1px; border-right: 0; border-top: 0; }
+.tn-frame > i::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
+
+/* ── banner: placed-paper label (wordmark, page/state titles) ─ */
+.tn-banner { display: inline-block; background: var(--paper-3); border: 1px solid var(--ink);
+  color: var(--ink); font-family: var(--f-display); font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; line-height: 1; padding: 10px 17px 9px; box-shadow: var(--drop); }
+.tn-banner--lg { font-size: 27px; letter-spacing: .03em; padding: 12px 22px 10px; }
+.tn-banner--sm { font-size: 15px; letter-spacing: .12em; padding: 7px 13px 6px; }
+
+/* ── caption / readout box ─────────────────────────────────── */
+.tn-cap { display: inline-block; background: rgba(251, 248, 242, .9); border: 1px solid var(--ink);
+  color: var(--ink-soft); font-size: 12px; letter-spacing: .01em; line-height: 1.45; padding: 7px 11px; }
+.tn-cap--tag { font-family: var(--f-mono); font-size: 10px; letter-spacing: .2em; text-transform: uppercase;
+  color: var(--ink); padding: 4px 9px; }
+.tn-cap--desc { max-width: 264px; }
+
+/* ── layout anchors ────────────────────────────────────────── */
+.tn-brand { position: absolute; top: 30px; left: 34px; display: flex; flex-direction: column;
+  align-items: flex-start; gap: 8px; transform: rotate(-1.2deg); }
+.tn-state { position: absolute; top: 30px; left: 50%; transform: translateX(-50%) rotate(.5deg);
+  display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; }
+.tn-desc { position: absolute; left: 34px; bottom: 34px; transform: rotate(-.6deg); }
+
+/* ── 3D-anchored node + presence markers ───────────────────── */
+.tag { position: absolute; top: 0; left: 0; will-change: transform; transform: translate(-50%, -50%);
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--ink); white-space: nowrap; }
+.tag .dot { display: inline-block; width: 5px; height: 5px; border: 1px solid var(--ink);
+  transform: rotate(45deg); margin-right: 7px; vertical-align: middle; background: var(--paper-3); }
+.tag.muted { color: var(--ink-soft); }
+
+/* ── control panel (mock state driver) ─────────────────────── */
+.panel { position: fixed; right: 34px; bottom: 34px; width: 262px; pointer-events: auto; z-index: 6;
+  background: var(--paper-3); border: 1px solid var(--ink); box-shadow: var(--drop); }
+.panel h2 { margin: 0; background: var(--ink); color: var(--paper-3); font-family: var(--f-mono);
+  font-size: 9px; font-weight: 400; letter-spacing: .16em; text-transform: uppercase; padding: 7px 14px; }
+.panel-body { padding: 12px 15px 13px; }
+.row { display: flex; align-items: center; justify-content: space-between; margin: 9px 0; }
+.row label { font-size: 12px; letter-spacing: .02em; }
+.seg { display: flex; border: 1px solid var(--ink); background: var(--paper); }
+.seg button { font-family: var(--f-mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  padding: 5px 10px; background: transparent; color: var(--ink); border: 0; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--ink); }
+.seg button.on { background: var(--ink); color: var(--paper-3); }
+.seg button:hover:not(.on) { background: var(--paper-2); }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 128px; height: 1px;
+  background: var(--ink); outline: none; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; background: var(--paper-3); border: 1.5px solid var(--ink);
+  cursor: pointer; transform: rotate(45deg); }
+input[type=range]::-moz-range-thumb { width: 11px; height: 11px; background: var(--paper-3);
+  border: 1.5px solid var(--ink); cursor: pointer; }
+.bpmval { font-family: var(--f-mono); font-size: 11px; width: 30px; text-align: right; }
+.json { margin-top: 12px; border-top: 1px solid var(--edge); padding-top: 11px;
+  font-family: var(--f-mono); font-size: 10px; line-height: 1.7; color: var(--ink-soft); }
+.json .k { color: var(--ink); display: inline-block; min-width: 116px; }
+
+/* ── viewport control: stop/start the auto-orbit ───────────── */
+.viewbtn { position: fixed; left: 50%; bottom: 30px; transform: translateX(-50%) rotate(-.5deg);
+  pointer-events: auto; z-index: 6; display: inline-flex; align-items: center; gap: 9px;
+  background: var(--paper-3); border: 1px solid var(--ink); color: var(--ink);
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  padding: 8px 15px; cursor: pointer; box-shadow: var(--drop); }
+.viewbtn:hover { background: var(--paper-2); }
+.viewbtn .ic { width: 8px; height: 8px; border: 1.5px solid var(--ink); border-radius: 50%;
+  border-top-color: transparent; }
+.viewbtn.off .ic { border-radius: 1px; border-top-color: var(--ink); }
+
+/* ── boot / error fallback ─────────────────────────────────── */
+.err { position: fixed; inset: 0; display: none; place-items: center; padding: 40px; text-align: center;
+  font-family: var(--f-mono); font-size: 13px; color: var(--ink); background: var(--paper); z-index: 9; }
+.err.show { display: grid; }
