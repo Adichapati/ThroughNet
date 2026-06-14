@@ -43,7 +43,7 @@ tn-onboarding .crease{ position:absolute; inset:0; opacity:0; pointer-events:non
     radial-gradient(circle at 54% 42%, rgba(43,42,38,.16), transparent 56%),
     radial-gradient(circle at 33% 70%, rgba(255,255,255,.5), transparent 50%); }
 
-tn-onboarding .begin{ position:fixed; left:50%; top:63%; transform:translateX(-50%) rotate(-.5deg); z-index:6;
+tn-onboarding .begin{ position:fixed; left:50%; top:72%; transform:translateX(-50%) rotate(-.5deg); z-index:7;
   display:inline-flex; align-items:center; gap:12px; cursor:pointer;
   background:var(--ink); color:var(--paper-3); border:1px solid var(--ink);
   font-family:var(--f-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase;
@@ -54,9 +54,15 @@ tn-onboarding .begin .arr{ width:7px; height:7px; border-right:1.5px solid var(-
 tn-onboarding .cover-foot{ position:fixed; left:50%; bottom:42px; transform:translateX(-50%); z-index:6;
   font-family:var(--f-mono); font-size:10px; letter-spacing:.24em; text-transform:uppercase; color:var(--ink-soft); }
 
+/* ── the WebGL tear canvas + pull-down hand hint ──────────────── */
+tn-onboarding .tear-canvas{ position:fixed; inset:0; z-index:5; display:block; cursor:grab; touch-action:none; }
+tn-onboarding .tear-canvas:active{ cursor:grabbing; }
+tn-onboarding .hand{ position:fixed; inset:0; display:grid; place-items:center; z-index:8; pointer-events:none; }
+tn-onboarding .hand svg{ width:clamp(46px,5vw,92px); fill:var(--ink); opacity:.9; animation:tn-hand 1.9s ease-in-out infinite; }
+@keyframes tn-hand{ 0%,100%{ transform:translateY(-16%); } 50%{ transform:translateY(22%); } }
+
 /* ── the wizard revealed behind the cover ─────────────────────── */
-tn-onboarding .wizard{ position:fixed; inset:0; z-index:1; display:grid; place-items:center;
-  opacity:0; transform:scale(.96); }
+tn-onboarding .wizard{ position:fixed; inset:0; z-index:1; display:grid; place-items:center; }
 tn-onboarding .wiz-col{ display:flex; flex-direction:column; align-items:center; gap:24px; width:min(580px,88vw); }
 tn-onboarding .wiz-rail{ display:flex; align-items:center; gap:10px; font-family:var(--f-mono); font-size:10px;
   letter-spacing:.16em; text-transform:uppercase; color:var(--ink-soft); }

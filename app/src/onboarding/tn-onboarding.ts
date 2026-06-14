@@ -1,20 +1,16 @@
-// <tn-onboarding> — the first-run setup flow. A paper "cover" (the ThroughNet
-// title page) tears down a jagged seam and crumples away to reveal a six-step
-// wizard: prepare → flash → connect → place → calibrate → done. The step panels
-// are mock here (ADR-151 A1); the real localhost /api/v1/setup/* endpoints land
-// in A3. Emits a `finish` event when the user enters the app.
+// <tn-onboarding> — the first-run setup flow. The cover (the ThroughNet title
+// page) is a draggable WebGL paper tear (tn-tear): drag down to rip it open,
+// revealing a six-step wizard behind it — prepare → flash → connect → place →
+// calibrate → done. The step panels are mock here (ADR-151 A1); the real
+// localhost /api/v1/setup/* endpoints land in A3. Emits `finish` on entry.
 import { LitElement, html, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
-import gsap from 'gsap';
+import { createTear, type TearHandle } from './tn-tear';
 
 const STEPS = ['prepare', 'flash', 'connect', 'place', 'calibrate', 'done'];
 
-// one jagged seam, shared by both halves so the rip interlocks
-const SEAM = [
-  [50.0, 0], [51.6, 7], [48.3, 14], [52.4, 21], [49.0, 28], [51.8, 35], [47.6, 42],
-  [52.2, 49], [48.8, 56], [51.4, 63], [47.9, 70], [52.6, 77], [49.2, 84], [51.0, 91], [50.0, 100],
-];
-const SEAM_PTS = SEAM.map(([x, y]) => `${x}% ${y}%`).join(', ');
+// the pull-down hand hint (user-provided)
+const HAND = svg`<svg viewBox="0 0 175 200"><path d="M173.272 82.5157C161.668 70.5528 146.803 62.2655 130.526 58.6846C118.575 55.6811 106.321 54.0528 94.0011 53.8313V20.8535C93.8062 15.2638 91.4057 9.97869 87.3246 6.15411C83.2435 2.32953 77.8139 0.276704 72.2233 0.444604C66.6327 0.276704 61.2031 2.32953 57.122 6.15411C53.0409 9.97869 50.6404 15.2638 50.4455 20.8535V83.0757L40.49 73.2446C36.1045 68.9428 30.2064 66.5329 24.0633 66.5329C17.9201 66.5329 12.0221 68.9428 7.63662 73.2446C5.43939 75.3674 3.69046 77.9095 2.49342 80.7204C1.29638 83.5313 0.675563 86.5539 0.667733 89.609C0.553645 95.5326 2.79095 101.26 6.88996 105.538L35.8855 139.885C37.2844 148.66 40.3015 157.1 44.7833 164.773C48.0577 170.674 52.2595 176.011 57.2277 180.578V192.525C57.2082 194.228 57.8424 195.874 58.9999 197.124C60.1573 198.374 61.75 199.133 63.45 199.245H150.001C151.701 199.133 153.294 198.374 154.451 197.124C155.609 195.874 156.243 194.228 156.223 192.525V175.725C168.45 161.166 175.07 142.717 174.89 123.707V86.3735C174.812 84.9394 174.24 83.5764 173.272 82.5157ZM162.445 124.018C162.843 140.561 157.077 156.662 146.268 169.191C144.894 170.31 144.003 171.914 143.779 173.671V187.111H69.9833V177.902C69.9848 176.883 69.736 175.879 69.2586 174.979C68.7812 174.078 68.0899 173.309 67.2455 172.738C62.5824 168.915 58.732 164.197 55.9211 158.862C51.9575 152.15 49.416 144.695 48.4544 136.96C48.3876 135.614 47.8854 134.325 47.0233 133.289L16.41 97.0757C15.4129 96.0917 14.6212 94.9195 14.0808 93.627C13.5405 92.3346 13.2622 90.9477 13.2622 89.5468C13.2622 88.146 13.5405 86.7591 14.0808 85.4666C14.6212 84.1742 15.4129 83.0019 16.41 82.0179C18.4587 80.0002 21.2189 78.8691 24.0944 78.8691C26.9699 78.8691 29.7301 80.0002 31.7788 82.0179L50.4455 100.685V120.222L62.89 114V20.8535C63.1113 18.5757 64.2079 16.4726 65.9487 14.987C67.6896 13.5015 69.939 12.7494 72.2233 12.889C74.5076 12.7494 76.7569 13.5015 78.4978 14.987C80.2387 16.4726 81.3353 18.5757 81.5566 20.8535V94.2757L94.0011 96.9513V66.3379C99.2229 66.4409 104.436 66.8148 109.619 67.4579V100L119.574 102.178V68.889C122.126 69.3868 124.739 69.9468 127.414 70.6313C130.64 71.4754 133.818 72.4932 136.934 73.6802V105.725L146.89 107.902V78.2224C152.546 81.0774 157.781 84.6997 162.445 88.9868V124.018Z"/></svg>`;
 
 const emblem = (cls = 'emblem') => svg`
   <svg class=${cls} viewBox="0 0 74 64">
@@ -31,53 +27,32 @@ export class TnOnboarding extends LitElement {
 
   @state() private step = 0;
   @state() private coverGone = false;
-  private tornFlag = false;
-  private sway?: gsap.core.Tween;
+  @state() private handVisible = false;
+  private tear?: TearHandle;
+  private handTimer?: ReturnType<typeof setTimeout>;
 
   private q(sel: string) { return this.querySelector(sel) as HTMLElement | null; }
 
   firstUpdated() {
-    const L = this.q('#cl'), R = this.q('#cr');
-    if (L) L.style.clipPath = `polygon(0% 0%, ${SEAM_PTS}, 0% 100%)`;
-    if (R) R.style.clipPath = `polygon(100% 0%, ${SEAM_PTS}, 100% 100%)`;
-
     const jump = new URLSearchParams(location.search).get('onbStep');
     if (jump !== null) {                              // dev: skip the cover to a step
       this.step = Math.max(0, Math.min(5, parseInt(jump, 10) || 0));
       this.coverGone = true;
-      this.updateComplete.then(() => { const w = this.q('.wizard'); if (w) gsap.set(w, { opacity: 1, scale: 1 }); });
       return;
     }
-    this.sway = gsap.fromTo(this.q('.cover'),
-      { rotation: -0.6, x: -5, y: -2 },
-      { rotation: 0.6, x: 5, y: 2, duration: 4.6, ease: 'sine.inOut', yoyo: true, repeat: -1, transformOrigin: '50% 6%' });
+    const canvas = this.q('.tear-canvas') as HTMLCanvasElement | null;
+    if (!canvas) return;
+    createTear(canvas, {
+      onFirstInteract: () => this.hideHand(),
+      onComplete: () => { this.coverGone = true; this.tear = undefined; },
+    }).then((h) => { this.tear = h; }).catch((e) => { console.error(e); this.coverGone = true; });
+    this.handTimer = setTimeout(() => { if (!this.coverGone) this.handVisible = true; }, 3500);
   }
 
-  private tear() {
-    if (this.tornFlag) return; this.tornFlag = true;
-    const L = this.q('#cl'), R = this.q('#cr');
-    this.sway?.kill();
-    const tl = gsap.timeline({ defaults: { ease: 'power3.in' } });
-    tl.to(this.q('.cover'), { rotation: 0, x: 0, y: 0, duration: 0.16, ease: 'power2.out' }, 0);
-    gsap.to(this.q('.wizard'), { opacity: 1, scale: 1, duration: 1.15, ease: 'power2.out' });
-    tl.to(this.q('.begin'), { opacity: 0, y: 10, duration: 0.2, ease: 'power2.in' }, 0)
-      .to(this.q('.cover-foot'), { opacity: 0, duration: 0.18 }, 0);
-    gsap.set(L, { transformOrigin: '24% 16%' }); gsap.set(R, { transformOrigin: '76% 16%' });
-    // 1) seam cracks open
-    tl.to(L, { xPercent: -2.6, rotation: -1.6, duration: 0.14, ease: 'power2.out' }, 0.06)
-      .to(R, { xPercent: 2.6, rotation: 1.6, duration: 0.14, ease: 'power2.out' }, 0.06);
-    // 2) buckle — creases bite in
-    tl.to(L, { scale: 0.8, rotation: -12, skewX: 8, duration: 0.2, ease: 'power2.in' }, 0.22)
-      .to(R, { scale: 0.8, rotation: 12, skewX: -8, duration: 0.2, ease: 'power2.in' }, 0.24)
-      .to(this.q('#cl .crease'), { opacity: 0.6, duration: 0.2 }, 0.22)
-      .to(this.q('#cr .crease'), { opacity: 0.6, duration: 0.2 }, 0.24);
-    // 3) ball up tight + fling off the top
-    tl.to(L, { xPercent: -40, yPercent: -46, rotation: -82, scale: 0.07, skewX: 16, opacity: 0, duration: 0.82 }, 0.4)
-      .to(R, { xPercent: 40, yPercent: -42, rotation: 82, scale: 0.07, skewX: -16, opacity: 0, duration: 0.82 }, 0.46)
-      .to(this.q('#cl .crease'), { opacity: 1, duration: 0.5 }, 0.4)
-      .to(this.q('#cr .crease'), { opacity: 1, duration: 0.5 }, 0.46)
-      .add(() => { this.coverGone = true; }, 1.32);
-  }
+  disconnectedCallback() { super.disconnectedCallback(); this.tear?.dispose(); clearTimeout(this.handTimer); }
+
+  private hideHand() { this.handVisible = false; clearTimeout(this.handTimer); }
+  private beginClick() { this.hideHand(); this.tear?.begin(); }
 
   private next() { if (this.step < 5) this.step += 1; else this.finish(); }
   private back() { if (this.step > 0) this.step -= 1; }
@@ -103,24 +78,13 @@ export class TnOnboarding extends LitElement {
     `)}</div>`;
   }
 
-  private coverHalf(id: string) {
-    return html`<div class="cover-half" id=${id}>
-      <div class="cover-inner"><div class="cover-stack">
-        ${emblem()}
-        <h1 class="title">Throughnet</h1>
-        <div class="rule"></div>
-        <div class="tagline">camera-free presence · motion · breathing</div>
-      </div></div>
-      <div class="crease"></div>
-    </div>`;
-  }
-
   private renderCover() {
-    return html`<div class="cover">
-      ${this.coverHalf('cl')}${this.coverHalf('cr')}
-      <button class="begin" @click=${this.tear}><span>Begin setup</span><span class="arr"></span></button>
-      <div class="cover-foot">tear to begin</div>
-    </div>`;
+    return html`
+      <canvas class="tear-canvas"></canvas>
+      <button class="begin" @click=${this.beginClick}><span>Begin setup</span><span class="arr"></span></button>
+      <div class="cover-foot">drag down to tear — or click</div>
+      ${this.handVisible ? html`<div class="hand">${HAND}</div>` : ''}
+    `;
   }
 
   private header(label: string) {

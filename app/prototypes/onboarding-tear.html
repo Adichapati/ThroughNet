@@ -229,7 +229,7 @@ try {
   let removed=false, interacted=false, down=false, startY=0;
   const px=(y)=> -(y/innerHeight)*2+1;
   function onDown(y){ if(removed) return; interacted=true; hideHand(); down=true; startY=px(y); }
-  function onMove(y){ if(!down||removed) return; S.tearAmount=Math.max(2*(startY-px(y)),0); syncUniforms(); }
+  function onMove(y){ if(!down||removed) return; S.tearAmount=Math.min(Math.max(2*(startY-px(y)),0),1.15); syncUniforms(); }
   function onUp(){ if(!down||removed) return; down=false; if(S.tearAmount>=0.55) complete(); else gsap.to(S,{tearAmount:0,duration:0.5,ease:'power3.out',onUpdate:syncUniforms}); }
   addEventListener('mousedown',e=>onDown(e.clientY)); addEventListener('mousemove',e=>onMove(e.clientY)); addEventListener('mouseup',onUp);
   addEventListener('touchstart',e=>onDown(e.touches[0].clientY),{passive:true}); addEventListener('touchmove',e=>onMove(e.touches[0].clientY),{passive:true}); addEventListener('touchend',onUp);
@@ -237,7 +237,7 @@ try {
   function complete(){ if(removed) return; removed=true; hideHand();
     gsap.to('#begin',{opacity:0,duration:0.2}); gsap.to('#foot',{opacity:0,duration:0.2});
     const tl=gsap.timeline({ defaults:{duration:1.0, ease:'power2.in'}, onComplete:()=>{ canvas.style.display='none'; } });
-    tl.to(S,{tearAmount:1.6+Math.random()*0.8, ease:'power2.out', onUpdate:syncUniforms},0);
+    tl.to(S,{tearAmount:1.15, ease:'power2.out', onUpdate:syncUniforms},0);
     tl.to(group.position,{z:1},0);
     sides.forEach(s=>{ const sign=(S[s.id].ripSide-0.5);
       tl.to(s.mesh.position,{ y:-3-Math.random()*3, x:(2+Math.random()*3)*sign },0);
