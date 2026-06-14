@@ -84,6 +84,17 @@ input[type=range]::-moz-range-thumb { width: 11px; height: 11px; background: var
   border-top-color: transparent; }
 .viewbtn.off .ic { border-radius: 1px; border-top-color: var(--ink); }
 
+/* ── live connection chip (top-right) ──────────────────────── */
+.tn-conn { position: fixed; top: 30px; right: 34px; z-index: 6; pointer-events: none;
+  display: inline-flex; align-items: center; gap: 8px; background: var(--paper-3);
+  border: 1px solid var(--ink); box-shadow: var(--drop); padding: 6px 11px; transform: rotate(.4deg);
+  font-family: var(--f-mono); font-size: 9px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-soft); }
+.tn-conn .led { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); }
+.tn-conn.live .led { background: var(--sage); }
+.tn-conn.connecting .led { background: var(--sand); }
+.tn-conn.offline .led { background: var(--clay); }
+.tn-conn b { color: var(--ink); font-weight: 400; }
+
 /* ── boot / error fallback ─────────────────────────────────── */
 .err { position: fixed; inset: 0; display: none; place-items: center; padding: 40px; text-align: center;
   font-family: var(--f-mono); font-size: 13px; color: var(--ink); background: var(--paper); z-index: 9; }
