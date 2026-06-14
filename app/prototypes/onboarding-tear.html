@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ThroughNet — Onboarding WebGL tear (prototype)</title>
+<!--
+  ThroughNet Phase A — onboarding cover as a draggable WebGL paper tear.
+  Technique adapted from a drag-to-tear photo shader (noise-texture rip edge +
+  3D peel + front/back shade), redesigned for our case:
+   - the cover (aged parchment + Allura wordmark + emblem) is BAKED to a texture
+     and torn by the shader;
+   - the renderer is transparent and draws ONLY the sheet, so where it tears the
+     DOM wizard behind shows straight through — the reveal needs no cross-fade.
+  Drag down to tear (or click "Begin setup"); a hand hint teaches the gesture.
+  Self-contained (CDN three@0.160 + GSAP). Port target: a `tn-tear` module
+  inside tn-onboarding.
+-->
+<style>
+  :root{
+    --paper:#F7F5F0; --paper-2:#F1ECE3; --paper-3:#FBF8F2;
+    --ink:#2B2A26; --ink-soft:#56524A; --edge:rgba(43,42,38,.48);
+    --clay:#D89A85; --slate:#93A7BE; --sand:#D8C09A; --drop:3px 4px 0 -1px rgba(43,42,38,.18);
+    --f-display:"Fraunces", Georgia, serif; --f-ui:"Space Grotesk", system-ui, sans-serif; --f-mono:"Space Mono", monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; overflow:hidden; color:var(--ink); font-family:var(--f-ui);
+    background-color:#E7DDC9;
+    background-image:
+      radial-gradient(140% 112% at 50% 24%, rgba(255,252,244,.62), rgba(255,252,244,0) 50%),
+      radial-gradient(125% 125% at 50% 52%, rgba(66,50,28,0) 44%, rgba(66,50,28,.34) 100%),
+      url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='800'><filter id='c'><feTurbulence type='fractalNoise' baseFrequency='0.004' numOctaves='2' seed='4'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%25' height='100%25' filter='url(%23c)' opacity='0.22'/></svg>");
+    background-size:cover,cover,800px 800px; background-repeat:no-repeat,no-repeat,repeat; }
+
+  canvas.webgl{ position:fixed; inset:0; z-index:5; cursor:grab; touch-action:none; }
+  canvas.webgl:active{ cursor:grabbing; }
+
+  /* architectural corner frame */
+  .tn-frame{ position:fixed; inset:16px; pointer-events:none; z-index:6; border:1px solid var(--edge); }
+  .tn-frame::before,.tn-frame::after,.tn-frame>i::before,.tn-frame>i::after{ content:""; position:absolute; width:14px; height:14px; border:1.5px solid var(--ink); }
+  .tn-frame::before{ top:-1px; left:-1px; border-right:0; border-bottom:0; }
+  .tn-frame::after{ top:-1px; right:-1px; border-left:0; border-bottom:0; }
+  .tn-frame>i::before{ bottom:-1px; left:-1px; border-right:0; border-top:0; }
+  .tn-frame>i::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
+
+  /* click-fallback + hint */
+  .begin{ position:fixed; left:50%; top:63%; transform:translateX(-50%) rotate(-.5deg); z-index:7;
+    display:inline-flex; align-items:center; gap:12px; cursor:pointer; background:var(--ink); color:var(--paper-3);
+    border:1px solid var(--ink); font-family:var(--f-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; padding:13px 22px; box-shadow:var(--drop); }
+  .begin .arr{ width:7px; height:7px; border-right:1.5px solid var(--paper-3); border-top:1.5px solid var(--paper-3); transform:rotate(45deg); }
+  .foot{ position:fixed; left:50%; bottom:42px; transform:translateX(-50%); z-index:7; font-family:var(--f-mono);
+    font-size:10px; letter-spacing:.24em; text-transform:uppercase; color:var(--ink-soft); }
+  .hand{ position:fixed; inset:0; display:grid; place-items:center; z-index:8; pointer-events:none; }
+  .hand svg{ width:clamp(46px,5vw,96px); opacity:0; }
+  .hand svg path{ fill:var(--ink); }
+
+  /* the wizard revealed behind the torn sheet */
+  .wizard{ position:fixed; inset:0; z-index:1; display:grid; place-items:center; }
+  .card{ width:min(560px,86vw); background:var(--paper-3); border:1px solid var(--ink); box-shadow:var(--drop); }
+  .card h2{ margin:0; background:var(--ink); color:var(--paper-3); font-family:var(--f-mono); font-size:9px; letter-spacing:.18em; text-transform:uppercase; padding:8px 16px; }
+  .card .b{ padding:26px 28px; display:grid; grid-template-columns:118px 1fr; gap:24px; align-items:center; }
+  .vig{ width:118px; height:118px; border:1px dashed var(--edge); display:grid; place-items:center; background:var(--paper); font-family:var(--f-mono); font-size:10px; color:var(--ink-soft); }
+  .card h3{ font-family:var(--f-display); font-weight:600; font-size:22px; margin:0 0 8px; }
+  .card p{ font-size:13px; line-height:1.6; color:var(--ink-soft); margin:0 0 16px; }
+  .btn{ font-family:var(--f-mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; padding:9px 16px; border:1px solid var(--ink); background:var(--ink); color:var(--paper-3); cursor:pointer; }
+  .err{ position:fixed; inset:0; display:none; place-items:center; padding:40px; text-align:center; font-family:var(--f-mono); font-size:13px; background:var(--paper); z-index:9; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Allura&family=Fraunces:opsz,wght@9..144,600&family=Space+Grotesk:wght@400;500&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script type="importmap">{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+<canvas class="webgl"></canvas>
+
+<section class="wizard">
+  <div class="card">
+    <h2>set up · step 1 of 6 · add a node</h2>
+    <div class="b">
+      <div class="vig">◇ node</div>
+      <div>
+        <h3>Add your first node</h3>
+        <p>Plug an ESP32-S3 into this computer with a USB cable. ThroughNet flashes the sensing firmware — the first board becomes your TX illuminator.</p>
+        <button class="btn">scan for board ▸</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<button class="begin" id="begin"><span>Begin setup</span><span class="arr"></span></button>
+<div class="foot" id="foot">drag down to tear — or click</div>
+<div class="hand"><svg id="hand" viewBox="0 0 175 200"><path d="M173.272 82.5157C161.668 70.5528 146.803 62.2655 130.526 58.6846C118.575 55.6811 106.321 54.0528 94.0011 53.8313V20.8535C93.8062 15.2638 91.4057 9.97869 87.3246 6.15411C83.2435 2.32953 77.8139 0.276704 72.2233 0.444604C66.6327 0.276704 61.2031 2.32953 57.122 6.15411C53.0409 9.97869 50.6404 15.2638 50.4455 20.8535V83.0757L40.49 73.2446C36.1045 68.9428 30.2064 66.5329 24.0633 66.5329C17.9201 66.5329 12.0221 68.9428 7.63662 73.2446C5.43939 75.3674 3.69046 77.9095 2.49342 80.7204C1.29638 83.5313 0.675563 86.5539 0.667733 89.609C0.553645 95.5326 2.79095 101.26 6.88996 105.538L35.8855 139.885C37.2844 148.66 40.3015 157.1 44.7833 164.773C48.0577 170.674 52.2595 176.011 57.2277 180.578V192.525C57.2082 194.228 57.8424 195.874 58.9999 197.124C60.1573 198.374 61.75 199.133 63.45 199.245H150.001C151.701 199.133 153.294 198.374 154.451 197.124C155.609 195.874 156.243 194.228 156.223 192.525V175.725C168.45 161.166 175.07 142.717 174.89 123.707V86.3735C174.812 84.9394 174.24 83.5764 173.272 82.5157V82.5157ZM162.445 124.018C162.843 140.561 157.077 156.662 146.268 169.191C144.894 170.31 144.003 171.914 143.779 173.671V187.111H69.9833V177.902C69.9848 176.883 69.736 175.879 69.2586 174.979C68.7812 174.078 68.0899 173.309 67.2455 172.738C62.5824 168.915 58.732 164.197 55.9211 158.862C51.9575 152.15 49.416 144.695 48.4544 136.96C48.3876 135.614 47.8854 134.325 47.0233 133.289L16.41 97.0757C15.4129 96.0917 14.6212 94.9195 14.0808 93.627C13.5405 92.3346 13.2622 90.9477 13.2622 89.5468C13.2622 88.146 13.5405 86.7591 14.0808 85.4666C14.6212 84.1742 15.4129 83.0019 16.41 82.0179C18.4587 80.0002 21.2189 78.8691 24.0944 78.8691C26.9699 78.8691 29.7301 80.0002 31.7788 82.0179L50.4455 100.685V120.222L62.89 114V20.8535C63.1113 18.5757 64.2079 16.4726 65.9487 14.987C67.6896 13.5015 69.939 12.7494 72.2233 12.889C74.5076 12.7494 76.7569 13.5015 78.4978 14.987C80.2387 16.4726 81.3353 18.5757 81.5566 20.8535V94.2757L94.0011 96.9513V66.3379C99.2229 66.4409 104.436 66.8148 109.619 67.4579V100L119.574 102.178V68.889C122.126 69.3868 124.739 69.9468 127.414 70.6313C130.64 71.4754 133.818 72.4932 136.934 73.6802V105.725L146.89 107.902V78.2224C152.546 81.0774 157.781 84.6997 162.445 88.9868V124.018Z"/></svg></div>
+
+<div class="err" id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+const fail=(e)=>{ const d=document.getElementById('err'); d.style.display='grid'; d.textContent='WebGL tear failed:\n\n'+(e&&e.message||e); console.error(e); };
+
+try {
+  await document.fonts.ready;
+  await Promise.all([ document.fonts.load('400 120px "Allura"'), document.fonts.load('400 14px "Space Mono"') ]);
+
+  const canvas = document.querySelector('canvas.webgl');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true, alpha:true });
+  renderer.setClearColor(0x000000, 0);                  // transparent → DOM behind shows through tears
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+  camera.position.z = 6;
+  scene.add(camera);
+
+  // ── bake the cover (parchment + Allura wordmark + emblem) to a texture ──
+  function drawSpaced(x, text, cx, cy, ls){ const ws=text.split('').map(c=>x.measureText(c).width+ls); const tot=ws.reduce((a,b)=>a+b,0)-ls; let px=cx-tot/2;
+    for(let i=0;i<text.length;i++){ x.fillText(text[i], px+ (ws[i]-ls)/2, cy); px+=ws[i]; } }
+  function emblem(x, cx, cy, r){ x.strokeStyle='#2B2A26'; x.lineWidth=r*0.045; x.beginPath();
+    x.moveTo(cx, cy-r); x.lineTo(cx-r, cy+r*0.62); x.lineTo(cx+r, cy+r*0.62); x.closePath(); x.stroke();
+    const dot=(dx,dy,fill)=>{ x.beginPath(); x.arc(cx+dx,cy+dy,r*0.13,0,6.283); x.fillStyle=fill; x.fill(); x.lineWidth=r*0.05; x.strokeStyle='#2B2A26'; x.stroke(); };
+    dot(0,-r,'#D8C09A'); dot(-r,r*0.62,'#93A7BE'); dot(r,r*0.62,'#93A7BE');
+    x.save(); x.translate(cx,cy+r*0.04); x.rotate(Math.PI/4); x.fillStyle='#D89A85'; x.lineWidth=r*0.05; x.strokeStyle='#2B2A26';
+    x.fillRect(-r*0.13,-r*0.13,r*0.26,r*0.26); x.strokeRect(-r*0.13,-r*0.13,r*0.26,r*0.26); x.restore(); }
+
+  let coverTex;
+  function bakeCover(){
+    const W=Math.round(innerWidth), H=Math.round(innerHeight);
+    const cv=document.createElement('canvas'); cv.width=W; cv.height=H; const x=cv.getContext('2d');
+    x.fillStyle='#E7DDC9'; x.fillRect(0,0,W,H);
+    let g=x.createRadialGradient(W/2,H*0.30,0,W/2,H*0.30,H*0.95); g.addColorStop(0,'rgba(255,252,244,0.6)'); g.addColorStop(0.55,'rgba(255,252,244,0)'); x.fillStyle=g; x.fillRect(0,0,W,H);
+    g=x.createRadialGradient(W/2,H/2,H*0.32,W/2,H/2,H*0.85); g.addColorStop(0,'rgba(66,50,28,0)'); g.addColorStop(1,'rgba(66,50,28,0.30)'); x.fillStyle=g; x.fillRect(0,0,W,H);
+    for(let i=0;i<W*H/700;i++){ x.fillStyle='rgba(43,42,38,'+(Math.random()*0.05)+')'; x.fillRect(Math.random()*W,Math.random()*H,2,2); }
+    x.textAlign='center'; x.textBaseline='middle';
+    emblem(x, W/2, H*0.345, H*0.066);
+    x.fillStyle='#2B2A26'; x.font=`400 ${Math.round(H*0.17)}px "Allura"`; x.fillText('Throughnet', W/2, H*0.49);
+    x.fillStyle='#2B2A26'; x.fillRect(W/2-27, Math.round(H*0.60), 54, 2);
+    x.fillStyle='#56524A'; x.font=`400 ${Math.round(H*0.0165)}px "Space Mono"`;
+    drawSpaced(x, 'CAMERA-FREE PRESENCE · MOTION · BREATHING', W/2, H*0.645, H*0.0125);
+    if(coverTex) coverTex.dispose();
+    coverTex=new THREE.CanvasTexture(cv); coverTex.colorSpace=THREE.SRGBColorSpace; coverTex.needsUpdate=true;
+    return coverTex;
+  }
+
+  // ── rip-edge noise (organic torn boundary) + empty border ──
+  // white (left) → black (right) with a turbulence-displaced jagged boundary = the torn edge
+  const ripImg=new Image();
+  const ripTex=new THREE.Texture();
+  await new Promise((res,rej)=>{ ripImg.onload=()=>{ ripTex.image=ripImg; ripTex.needsUpdate=true; res(); }; ripImg.onerror=rej;
+    ripImg.src='data:image/svg+xml,'+encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='0'><stop offset='0.30' stop-color='white'/><stop offset='0.46' stop-color='white'/><stop offset='0.54' stop-color='black'/><stop offset='0.70' stop-color='black'/></linearGradient><filter id='d' x='0' y='0' width='100%' height='100%'><feTurbulence type='fractalNoise' baseFrequency='0.007 0.03' numOctaves='2' seed='7' result='n'/><feDisplacementMap in='SourceGraphic' in2='n' scale='150' xChannelSelector='R' yChannelSelector='G'/></filter></defs><rect width='512' height='512' fill='url(#g)' filter='url(#d)'/></svg>"); });
+  const blackTex=new THREE.DataTexture(new Uint8Array([0,0,0,255]),1,1,THREE.RGBAFormat); blackTex.needsUpdate=true;
+
+  // ── shaders (3D peel in the vertex; texture-noise rip cut in the fragment) ──
+  const ripVertexShader = `
+    uniform float uTearAmount, uTearWidth, uTearXAngle, uTearYAngle, uTearZAngle, uTearXOffset, uXDirection;
+    varying vec2 vUv; varying float vAmount;
+    mat4 rotX(float a){ return mat4(1.,0.,0.,0., 0.,cos(a),-sin(a),0., 0.,sin(a),cos(a),0., 0.,0.,0.,1.); }
+    mat4 rotY(float a){ return mat4(cos(a),0.,sin(a),0., 0.,1.,0.,0., -sin(a),0.,cos(a),0., 0.,0.,0.,1.); }
+    mat4 rotZ(float a){ return mat4(cos(a),-sin(a),0.,0., sin(a),cos(a),0.,0., 0.,0.,1.,0., 0.,0.,0.,1.); }
+    void main(){
+      float yAmount = max(0.0, (uTearAmount - (1.0 - uv.y)));
+      vec3 rot = vec3(uTearXAngle*yAmount, uTearYAngle*yAmount, uTearZAngle*yAmount) * yAmount;
+      float halfHeight = float(HEIGHT) * 0.5;
+      float halfWidth = (float(WIDTH) - uTearWidth * 0.5) * 0.5;
+      vec4 v = vec4(position.x + (halfWidth*uXDirection) - halfWidth, position.y + halfHeight, position.z, 1.0);
+      v = v * rotY(rot.y) * rotX(rot.x) * rotZ(rot.z);
+      v.x += uTearXOffset*yAmount + halfWidth; v.y -= halfHeight;
+      gl_Position = projectionMatrix * viewMatrix * modelMatrix * v;
+      vUv = uv; vAmount = yAmount;
+    }`;
+  const ripFragmentShader = `
+    uniform sampler2D uMap, uRip, uBorder; uniform vec3 uShadeColor;
+    uniform float uUvOffset, uRipSide, uShadeAmount, uTearWidth, uWhiteThreshold, uTearOffset;
+    varying vec2 vUv; varying float vAmount;
+    void main(){
+      bool rightSide = uRipSide == 1.0;
+      float width = float(WIDTH); float widthOverlap = (uTearWidth*0.5) + width;
+      float xScale = widthOverlap / float(FULL_WIDTH);
+      vec2 uvo = vec2(vUv.x*xScale + uUvOffset, vUv.y);
+      vec4 col = texture2D(uMap, uvo);
+      vec4 bc = texture2D(uBorder, uvo); if(bc.r>0.0) col=vec4(vec3(0.95),1.0);
+      float ripRange = uTearWidth / widthOverlap;
+      float ripStart = rightSide ? 0.0 : 1.0 - ripRange;
+      float alpha = 1.0;
+      float ripX = (vUv.x - ripStart)/ripRange;
+      if(ripX >= 0.0 && ripX <= 1.0){                       // cut only inside the seam zone; body stays opaque
+        float ripY = vUv.y*0.5 + 0.5*uTearOffset;
+        float w = dot(vec4(1.0), texture2D(uRip, vec2(ripX, ripY)))/4.0;
+        vec4 ripCol = texture2D(uRip, vec2(ripX*0.9, ripY-0.02));
+        if(!rightSide && w <= uWhiteThreshold){ if(dot(vec4(1.0),ripCol)/4.0 >= uWhiteThreshold) col=ripCol; else alpha=0.0; }
+        if(rightSide && w >= uWhiteThreshold) alpha=0.0;
+      }
+      gl_FragColor = mix(vec4(col.rgb, alpha), vec4(uShadeColor, alpha), vAmount*uShadeAmount);
+    }`;
+
+  // ── the sheet (two interlocking halves) ──
+  const group=new THREE.Group(); scene.add(group);
+  const S={ width:3, height:2, tearWidth:0.4, tearAmount:0, tearOffset:Math.random(), whiteThreshold:0.62,
+    left:{ uvOffset:0, ripSide:0, xAngle:-0.01, yAngle:-0.1, zAngle:0.05, xOffset:0, dir:-1, shade:new THREE.Color('white'), shadeAmt:0.18 },
+    right:{ uvOffset:0, ripSide:1, xAngle:0.2, yAngle:0.1, zAngle:-0.1, xOffset:0, dir:1, shade:new THREE.Color('black'), shadeAmt:0.4 } };
+  let sides=[];
+  function buildSheet(){
+    // size the sheet to fill the frustum (slight overscan)
+    const fH = 2*camera.position.z*Math.tan(THREE.MathUtils.degToRad(camera.fov/2));
+    S.height = fH*1.06; S.width = fH*camera.aspect*1.06; S.tearWidth = S.width*0.12;
+    S.right.uvOffset = ((S.width - S.tearWidth)/S.width)*0.5;
+    sides.forEach(s=>{ s.mesh.geometry.dispose(); s.mesh.material.dispose(); group.remove(s.mesh); }); sides=[];
+    const geo=new THREE.PlaneGeometry(S.width/2 + S.tearWidth/2, S.height, 30, 50);
+    for(const id of ['left','right']){ const p=S[id];
+      const mat=new THREE.ShaderMaterial({ transparent:true,
+        defines:{ HEIGHT:S.height.toFixed(4), WIDTH:(S.width/2).toFixed(4), FULL_WIDTH:S.width.toFixed(4) },
+        uniforms:{ uMap:{value:coverTex}, uRip:{value:ripTex}, uBorder:{value:blackTex},
+          uRipSide:{value:p.ripSide}, uTearWidth:{value:S.tearWidth}, uWhiteThreshold:{value:S.whiteThreshold},
+          uTearAmount:{value:S.tearAmount}, uTearOffset:{value:S.tearOffset}, uUvOffset:{value:p.uvOffset},
+          uTearXAngle:{value:p.xAngle}, uTearYAngle:{value:p.yAngle}, uTearZAngle:{value:p.zAngle},
+          uTearXOffset:{value:p.xOffset}, uXDirection:{value:p.dir}, uShadeColor:{value:p.shade}, uShadeAmount:{value:p.shadeAmt} },
+        vertexShader:ripVertexShader, fragmentShader:ripFragmentShader });
+      const mesh=new THREE.Mesh(geo, mat); if(p.xAngle>0) mesh.position.z+=0.0001; group.add(mesh);
+      sides.push({ id, mesh, mat }); }
+  }
+  function syncUniforms(){ sides.forEach(s=>{ const u=s.mesh.material.uniforms;
+    u.uTearAmount.value=S.tearAmount; u.uTearOffset.value=S.tearOffset; }); }
+
+  function resize(){ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight); renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+    bakeCover(); buildSheet(); }
+  addEventListener('resize', resize); bakeCover(); resize();
+
+  // ── interaction: drag to tear ──
+  let removed=false, interacted=false, down=false, startY=0;
+  const px=(y)=> -(y/innerHeight)*2+1;
+  function onDown(y){ if(removed) return; interacted=true; hideHand(); down=true; startY=px(y); }
+  function onMove(y){ if(!down||removed) return; S.tearAmount=Math.max(2*(startY-px(y)),0); syncUniforms(); }
+  function onUp(){ if(!down||removed) return; down=false; if(S.tearAmount>=0.55) complete(); else gsap.to(S,{tearAmount:0,duration:0.5,ease:'power3.out',onUpdate:syncUniforms}); }
+  addEventListener('mousedown',e=>onDown(e.clientY)); addEventListener('mousemove',e=>onMove(e.clientY)); addEventListener('mouseup',onUp);
+  addEventListener('touchstart',e=>onDown(e.touches[0].clientY),{passive:true}); addEventListener('touchmove',e=>onMove(e.touches[0].clientY),{passive:true}); addEventListener('touchend',onUp);
+
+  function complete(){ if(removed) return; removed=true; hideHand();
+    gsap.to('#begin',{opacity:0,duration:0.2}); gsap.to('#foot',{opacity:0,duration:0.2});
+    const tl=gsap.timeline({ defaults:{duration:1.0, ease:'power2.in'}, onComplete:()=>{ canvas.style.display='none'; } });
+    tl.to(S,{tearAmount:1.6+Math.random()*0.8, ease:'power2.out', onUpdate:syncUniforms},0);
+    tl.to(group.position,{z:1},0);
+    sides.forEach(s=>{ const sign=(S[s.id].ripSide-0.5);
+      tl.to(s.mesh.position,{ y:-3-Math.random()*3, x:(2+Math.random()*3)*sign },0);
+      tl.to(s.mesh.rotation,{ z:(-2-Math.random()*3)*sign },0); });
+    tl.to(canvas,{ opacity:0, duration:0.4, ease:'power2.in' }, 0.7);
+  }
+  document.getElementById('begin').addEventListener('click', ()=>{ if(!removed){ interacted=true; complete(); } });
+
+  // ── hand hint after idle ──
+  const hand=document.getElementById('hand');
+  const hint=gsap.timeline({repeat:-1, paused:true, defaults:{duration:1.4, ease:'power3.inOut'}});
+  hint.fromTo(hand,{y:'-22%'},{y:'24%'}).to(hand,{y:'-22%',duration:0.9},'+=0.1');
+  function showHand(){ if(!interacted){ hint.play(); gsap.to(hand,{opacity:0.9, duration:0.6}); } }
+  function hideHand(){ hint.pause(); gsap.to(hand,{opacity:0, duration:0.3}); }
+  setTimeout(showHand, 3500);
+
+  // screenshot hooks
+  window.__tear=(v)=>{ S.tearAmount=v; syncUniforms(); }; window.__complete=complete;
+
+  function tick(){ requestAnimationFrame(tick); renderer.render(scene,camera); }
+  tick();
+} catch(e){ fail(e); }
+</script>
+</body>
+</html>
