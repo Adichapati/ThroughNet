@@ -44,6 +44,7 @@ import csv
 import io
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -176,6 +177,118 @@ def merge_state_into_args(args, prior: dict) -> dict:
         elif name in merged:
             setattr(args, name, merged[name])
     return merged
+
+
+# ---------------------------------------------------------------------------
+# ROADMAP R2 — zero-config fleet growth (--auto)
+# ---------------------------------------------------------------------------
+#
+# "Adding an ESP shouldn't break the system." The bistatic topology is
+# 1 TX illuminator + N radio-silent RX. With --auto, provisioning a board
+# derives its identity from the rest of the fleet's per-port state instead of
+# the operator hand-picking node ids (the one real collision risk):
+#   * role           — first board provisioned becomes the TX; every later board is RX
+#   * node_id        — the lowest positive id not already used by another board
+#   * filter_mac(RX) — the TX board's MAC, recorded from the device when the TX
+#                      was provisioned (stored as `wifi_mac` in its state file)
+# Values passed explicitly (or already on record for this port) always win —
+# --auto only fills the gaps.
+
+# Matches a MAC address anywhere in text (e.g. esptool `read_mac` output).
+_MAC_RE = re.compile(r"(?:[0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}")
+
+
+def _fleet_states(state_dir):
+    """Return the list of all per-port state dicts under `state_dir`."""
+    out = []
+    if not os.path.isdir(state_dir):
+        return out
+    for fn in sorted(os.listdir(state_dir)):
+        if not fn.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(state_dir, fn), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                out.append(data)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def _next_free_node_id(states):
+    """Lowest positive node_id not already taken by any board in `states`."""
+    used = {s.get("node_id") for s in states if isinstance(s.get("node_id"), int)}
+    nid = 1
+    while nid in used:
+        nid += 1
+    return nid
+
+
+def _find_tx_mac(states):
+    """The recorded MAC of the fleet's TX illuminator, or None if not provisioned."""
+    for s in states:
+        if s.get("role") == "tx" and s.get("wifi_mac"):
+            return s["wifi_mac"]
+    return None
+
+
+def parse_mac(text):
+    """Extract the first MAC address from `text` (lower-cased), or None."""
+    m = _MAC_RE.search(text or "")
+    return m.group(0).lower() if m else None
+
+
+def read_device_mac(port, chip, baud):
+    """Read the connected board's base/STA MAC via `esptool read_mac`.
+
+    Returns the MAC string (lower-case) or None on any failure. Read-only —
+    does not modify the device.
+    """
+    try:
+        out = subprocess.check_output(
+            [sys.executable, "-m", "esptool", "--chip", chip, "--port", port,
+             "--baud", str(baud), "read_mac"],
+            stderr=subprocess.STDOUT, text=True, timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError,
+            subprocess.TimeoutExpired) as exc:
+        print(f"WARNING: could not read device MAC ({exc}).", file=sys.stderr)
+        return None
+    return parse_mac(out)
+
+
+def apply_auto_assignment(args, merged, states):
+    """ROADMAP R2: fill role / node_id / filter_mac for fleet growth.
+
+    Only fills values not already set (by CLI or this port's prior state).
+    Mutates `args` and `merged`. `states` is the fleet's per-port state dicts.
+    Returns a list of human-readable notes describing what was assigned.
+    """
+    notes = []
+    if args.role is None:
+        fleet_has_tx = any(s.get("role") == "tx" for s in states)
+        args.role = "rx" if fleet_has_tx else "tx"
+        why = "TX already in fleet -> receiver" if fleet_has_tx else "first board -> TX illuminator"
+        notes.append(f"role = {args.role} ({why})")
+    if args.node_id is None:
+        args.node_id = _next_free_node_id(states)
+        notes.append(f"node_id = {args.node_id} (next free in fleet)")
+    if args.role == "rx" and args.filter_mac is None:
+        tx_mac = _find_tx_mac(states)
+        if tx_mac:
+            args.filter_mac = tx_mac
+            notes.append(f"filter_mac = {tx_mac} (fleet TX)")
+        else:
+            notes.append(
+                "filter_mac = (unset) -- no TX MAC on record yet; provision the TX "
+                "board first, or pass --filter-mac <TX MAC>"
+            )
+    for key in ("role", "node_id", "filter_mac"):
+        val = getattr(args, key, None)
+        if val is not None:
+            merged[key] = val
+    return notes
 
 
 def build_nvs_csv(args):
@@ -356,6 +469,13 @@ def main():
     parser.add_argument("--channel", type=int, help="CSI channel (1-14 for 2.4GHz, 36-177 for 5GHz). "
                         "Overrides auto-detection from connected AP.")
     parser.add_argument("--filter-mac", type=str, help="MAC address to filter CSI frames (AA:BB:CC:DD:EE:FF)")
+    # ThroughNet R2: zero-config fleet growth
+    parser.add_argument("--auto", action="store_true",
+                        help="Auto-assign role/node_id/filter_mac from the rest of the "
+                        "fleet's provisioning state: first board provisioned becomes the "
+                        "TX, every later board is an RX locked to the TX's MAC, and "
+                        "node_id is the next free id. Explicit flags override. Provision "
+                        "the TX board first so RX boards can find its MAC.")
     # ThroughNet Phase 1: TX/RX bistatic roles
     parser.add_argument("--role", choices=["tx", "rx", "legacy"],
                         help="Node role: tx = fixed-rate OFDM beacon illuminator (no CSI capture); "
@@ -402,6 +522,15 @@ def main():
     else:
         prior = load_state(args.port, args.state_dir)
     merged = merge_state_into_args(args, prior)
+
+    # ROADMAP R2: --auto fills role/node_id/filter_mac from the fleet so adding a
+    # board never requires hand-picking ids (the one real collision risk).
+    if args.auto:
+        notes = apply_auto_assignment(args, merged, _fleet_states(args.state_dir))
+        if notes:
+            print("Auto-assigned (fleet-aware):", file=sys.stderr)
+            for note in notes:
+                print(f"  - {note}", file=sys.stderr)
 
     if args.state:
         print(json.dumps(merged, indent=2, sort_keys=True))
@@ -554,6 +683,18 @@ def main():
         path = save_state(args.port, args.state_dir, merged)
         print(f"State persisted to {path}")
         return
+
+    # ROADMAP R2: record the TX's MAC so future RX boards can --auto-lock their
+    # filter_mac onto it. Read-only; runs only for the illuminator on a real flash.
+    if args.role == "tx":
+        tx_mac = read_device_mac(args.port, args.chip, args.baud)
+        if tx_mac:
+            merged["wifi_mac"] = tx_mac
+            print(f"Recorded TX MAC for fleet auto-provisioning: {tx_mac}")
+        else:
+            print("WARNING: could not read TX MAC — RX --auto won't find a filter_mac "
+                  "until the TX is re-provisioned or you pass --filter-mac.",
+                  file=sys.stderr)
 
     flash_nvs(args.port, args.baud, nvs_bin, args.chip)
     # Persist merged state after a successful flash so future partial

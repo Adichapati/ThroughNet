@@ -28,7 +28,7 @@
 //! Baselines are captured per node via `BaselineCapture` (room must be empty).
 
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Frames per analysis window (~4 s at the ~37 fps beacon-fed rate).
 const WIN_FRAMES: usize = 150;
@@ -421,6 +421,92 @@ impl LinkDetector {
     pub fn moving(&self) -> Option<bool> {
         self.moving_state
     }
+
+    /// True once this node produced a verdict but then stopped sending frames for
+    /// `FUSION_STALE_AFTER`. Lets fusion ignore a dropped/unplugged node (or one
+    /// mid-mDNS-reconnect after a host IP change) instead of holding its last
+    /// verdict forever. `None` last_update (pre-baseline) is never stale — such a
+    /// node simply contributes nothing (its `present()` is `None`).
+    pub fn is_stale(&self) -> bool {
+        self.last_update
+            .is_some_and(|t| t.elapsed() > FUSION_STALE_AFTER)
+    }
+
+    /// This node's contribution to the fused room state (see [`fuse`]).
+    pub fn verdict(&self) -> NodeVerdict {
+        NodeVerdict {
+            present: self.present(),
+            moving: self.moving(),
+            breathing: self
+                .breathing_bpm()
+                .map(|bpm| (bpm, self.breathing_confidence())),
+            stale: self.is_stale(),
+        }
+    }
+}
+
+/// A node whose last frame is older than this is excluded from the fused state,
+/// so a dropped/unplugged node (or one reconnecting after a host IP change)
+/// can't pin the room to a phantom `present`. Generous vs the ~25 ms inter-frame
+/// time, but well under the 60 s `node_states` eviction — fusion must react to a
+/// lost node faster than memory cleanup does.
+pub const FUSION_STALE_AFTER: Duration = Duration::from_secs(15);
+
+/// One node's contribution to the fused ThroughNet verdict. `breathing` is
+/// `(bpm, confidence)`. Decoupled from `LinkDetector` so [`fuse`] stays pure and
+/// directly unit-testable for any node count.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeVerdict {
+    pub present: Option<bool>,
+    pub moving: Option<bool>,
+    pub breathing: Option<(f64, f64)>,
+    pub stale: bool,
+}
+
+/// Fuse per-node verdicts into the room-level state + best-link breathing.
+///
+/// **N-agnostic** — adding an RX just adds another verdict; there is no fixed
+/// node count anywhere. Stale nodes are skipped. Returns the fused state
+/// (`no_baseline_or_data` | `absent` | `present_still` | `present_moving`) and,
+/// only for `present_still`, the highest-confidence node's `(bpm, confidence)`.
+pub fn fuse(verdicts: &[NodeVerdict]) -> (&'static str, Option<(f64, f64)>) {
+    let mut any_present = false;
+    let mut any_moving = false;
+    let mut have_scores = false;
+    let mut best_breath: Option<(f64, f64)> = None;
+    for v in verdicts {
+        if v.stale {
+            continue;
+        }
+        if let Some(p) = v.present {
+            have_scores = true;
+            any_present |= p;
+        }
+        if let Some(m) = v.moving {
+            any_moving |= m;
+        }
+        if let Some((bpm, c)) = v.breathing {
+            if best_breath.map_or(true, |(_, bc)| c > bc) {
+                best_breath = Some((bpm, c));
+            }
+        }
+    }
+    let state = if !have_scores {
+        "no_baseline_or_data"
+    } else if any_present && any_moving {
+        "present_moving"
+    } else if any_present {
+        "present_still"
+    } else {
+        "absent"
+    };
+    // Breathing is only meaningful for a still, present subject.
+    let breathing = if state == "present_still" {
+        best_breath
+    } else {
+        None
+    };
+    (state, breathing)
 }
 
 /// Accumulates normalized frames during an empty-room baseline capture,
@@ -623,5 +709,86 @@ mod tests {
             commit_state(&mut state, &mut streak, false);
         }
         assert_eq!(state, Some(false));
+    }
+
+    // ── R2: N-agnostic fusion + stale-node exclusion ──────────────────────
+    fn v(
+        present: Option<bool>,
+        moving: Option<bool>,
+        breathing: Option<(f64, f64)>,
+        stale: bool,
+    ) -> NodeVerdict {
+        NodeVerdict { present, moving, breathing, stale }
+    }
+
+    #[test]
+    fn fuse_no_scores_when_all_pre_baseline() {
+        let nodes = [v(None, None, None, false), v(None, None, None, false)];
+        assert_eq!(fuse(&nodes).0, "no_baseline_or_data");
+        assert_eq!(fuse(&[]).0, "no_baseline_or_data");
+    }
+
+    #[test]
+    fn fuse_ors_present_and_moving_across_three_nodes() {
+        // 3 RX: one sees a still present subject, the others see nothing.
+        let still = [
+            v(Some(false), Some(false), None, false),
+            v(Some(true), Some(false), None, false),
+            v(Some(false), Some(false), None, false),
+        ];
+        assert_eq!(fuse(&still).0, "present_still");
+        // Any node reporting motion escalates the whole room to moving.
+        let moving = [
+            v(Some(true), Some(false), None, false),
+            v(Some(false), Some(true), None, false),
+            v(Some(false), Some(false), None, false),
+        ];
+        assert_eq!(fuse(&moving).0, "present_moving");
+    }
+
+    #[test]
+    fn fuse_is_n_agnostic() {
+        // Five quiet nodes → absent; adding a sixth present flips to present_still,
+        // proving no fixed node count (the "adding nodes can't break it" guard).
+        let mut nodes = vec![v(Some(false), Some(false), None, false); 5];
+        assert_eq!(fuse(&nodes).0, "absent");
+        nodes.push(v(Some(true), Some(false), None, false));
+        assert_eq!(fuse(&nodes).0, "present_still");
+    }
+
+    #[test]
+    fn fuse_excludes_stale_node_from_presence() {
+        // A node stuck `present` but stale (dropped / reconnecting after an IP change)
+        // must NOT pin the room present — the phantom-presence guard.
+        let stale_present = [
+            v(Some(true), Some(false), None, true), // stale → ignored
+            v(Some(false), Some(false), None, false),
+        ];
+        assert_eq!(fuse(&stale_present).0, "absent");
+        // Without the stale flag the very same verdicts read present_still.
+        let fresh = [
+            v(Some(true), Some(false), None, false),
+            v(Some(false), Some(false), None, false),
+        ];
+        assert_eq!(fuse(&fresh).0, "present_still");
+    }
+
+    #[test]
+    fn fuse_best_link_breathing_picks_highest_confidence() {
+        // Highest-confidence breathing wins, but only while present_still.
+        let nodes = [
+            v(Some(true), Some(false), Some((14.0, 3.0)), false),
+            v(Some(true), Some(false), Some((15.5, 9.0)), false),
+        ];
+        assert_eq!(fuse(&nodes), ("present_still", Some((15.5, 9.0))));
+        // A stale high-confidence breathing node is ignored.
+        let with_stale = [
+            v(Some(true), Some(false), Some((14.0, 3.0)), false),
+            v(Some(true), Some(false), Some((20.0, 50.0)), true),
+        ];
+        assert_eq!(fuse(&with_stale).1, Some((14.0, 3.0)));
+        // Breathing is suppressed unless the fused state is present_still.
+        let while_moving = [v(Some(true), Some(true), Some((15.0, 9.0)), false)];
+        assert_eq!(fuse(&while_moving), ("present_moving", None));
     }
 }

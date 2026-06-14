@@ -125,5 +125,70 @@ class TestStatePathSanitization(unittest.TestCase):
         self.assertTrue(path.endswith("COM7.json"))
 
 
+class TestAutoAssignment(unittest.TestCase):
+    """ROADMAP R2 — fleet-aware --auto role/node_id/filter_mac assignment."""
+
+    def test_next_free_node_id_empty_fleet(self):
+        self.assertEqual(provision._next_free_node_id([]), 1)
+
+    def test_next_free_node_id_skips_used_and_fills_gaps(self):
+        states = [{"node_id": 1}, {"node_id": 3}]
+        self.assertEqual(provision._next_free_node_id(states), 2)
+        states.append({"node_id": 2})
+        self.assertEqual(provision._next_free_node_id(states), 4)
+
+    def test_find_tx_mac(self):
+        states = [
+            {"role": "rx", "node_id": 2},
+            {"role": "tx", "node_id": 1, "wifi_mac": "14:c1:9f:3a:06:f8"},
+        ]
+        self.assertEqual(provision._find_tx_mac(states), "14:c1:9f:3a:06:f8")
+        self.assertIsNone(provision._find_tx_mac([{"role": "rx", "node_id": 2}]))
+
+    def test_parse_mac(self):
+        self.assertEqual(
+            provision.parse_mac("MAC: 14:C1:9F:3A:06:F8\n"), "14:c1:9f:3a:06:f8"
+        )
+        self.assertIsNone(provision.parse_mac("no mac here"))
+        self.assertIsNone(provision.parse_mac(None))
+
+    def test_first_board_becomes_tx(self):
+        args = _mk_args()
+        merged = {}
+        provision.apply_auto_assignment(args, merged, [])
+        self.assertEqual(args.role, "tx")
+        self.assertEqual(args.node_id, 1)
+        self.assertEqual(merged["role"], "tx")
+        self.assertEqual(merged["node_id"], 1)
+
+    def test_second_board_becomes_rx_locked_to_tx(self):
+        fleet = [{"role": "tx", "node_id": 1, "wifi_mac": "14:c1:9f:3a:06:f8"}]
+        args = _mk_args()
+        merged = {}
+        provision.apply_auto_assignment(args, merged, fleet)
+        self.assertEqual(args.role, "rx")
+        self.assertEqual(args.node_id, 2)
+        self.assertEqual(args.filter_mac, "14:c1:9f:3a:06:f8")
+        self.assertEqual(merged["filter_mac"], "14:c1:9f:3a:06:f8")
+
+    def test_explicit_values_win_over_auto(self):
+        fleet = [{"role": "tx", "node_id": 1, "wifi_mac": "aa:bb:cc:dd:ee:ff"}]
+        args = _mk_args(role="rx", node_id=7, filter_mac="11:22:33:44:55:66")
+        merged = {}
+        provision.apply_auto_assignment(args, merged, fleet)
+        self.assertEqual(args.role, "rx")
+        self.assertEqual(args.node_id, 7)
+        self.assertEqual(args.filter_mac, "11:22:33:44:55:66")
+
+    def test_rx_without_recorded_tx_mac_leaves_filter_unset(self):
+        fleet = [{"role": "tx", "node_id": 1}]  # TX present but MAC not recorded yet
+        args = _mk_args()
+        merged = {}
+        notes = provision.apply_auto_assignment(args, merged, fleet)
+        self.assertEqual(args.role, "rx")
+        self.assertIsNone(args.filter_mac)
+        self.assertTrue(any("filter_mac" in n for n in notes))
+
+
 if __name__ == "__main__":
     unittest.main()

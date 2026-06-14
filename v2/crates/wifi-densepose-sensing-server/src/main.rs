@@ -4582,27 +4582,13 @@ async fn throughnet_baseline_stop(State(state): State<SharedState>) -> Json<serd
 async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
     let s = state.read().await;
     let mut nodes = serde_json::Map::new();
-    let mut any_present = false;
-    let mut any_moving = false;
-    let mut have_scores = false;
-    // Best-link breathing: the highest-confidence node reporting a rate.
-    let mut best_breath: Option<(f64, f64)> = None; // (bpm, confidence)
+    // Build per-node verdicts (with staleness) for N-agnostic fusion; see
+    // `throughnet::fuse`. A node that stopped sending frames is excluded so a
+    // dropped/unplugged/reconnecting RX can't pin the room to a phantom `present`.
+    let mut verdicts = Vec::with_capacity(s.throughnet.len());
     for (node, det) in s.throughnet.iter() {
-        let present = det.present();
-        let moving = det.moving();
-        if let Some(p) = present {
-            have_scores = true;
-            any_present |= p;
-        }
-        if let Some(m) = moving {
-            any_moving |= m;
-        }
-        if let Some(bpm) = det.breathing_bpm() {
-            let c = det.breathing_confidence();
-            if best_breath.map_or(true, |(_, bc)| c > bc) {
-                best_breath = Some((bpm, c));
-            }
-        }
+        let verdict = det.verdict();
+        verdicts.push(verdict);
         nodes.insert(
             node.to_string(),
             serde_json::json!({
@@ -4610,27 +4596,19 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
                 "baseline_age_s": det.baseline.as_ref().map(|b| b.captured_at.elapsed().as_secs()),
                 "presence_score": det.presence_score,
                 "motion_score": det.motion_score,
-                "present": present,
-                "moving": moving,
+                "present": verdict.present,
+                "moving": verdict.moving,
+                "stale": verdict.stale,
                 "breathing_bpm": det.breathing_bpm(),
                 "breathing_confidence": det.breathing_confidence(),
                 "last_update_ms": det.last_update.map(|t| t.elapsed().as_millis() as u64),
             }),
         );
     }
-    let fused = if !have_scores {
-        "no_baseline_or_data"
-    } else if any_present && any_moving {
-        "present_moving"
-    } else if any_present {
-        "present_still"
-    } else {
-        "absent"
-    };
-    // Breathing is only meaningful for a still, present subject.
-    let (breathing_bpm, breathing_confidence) = match (fused == "present_still", best_breath) {
-        (true, Some((bpm, c))) => (Some(bpm), Some(c)),
-        _ => (None, None),
+    let (fused, best_breath) = throughnet::fuse(&verdicts);
+    let (breathing_bpm, breathing_confidence) = match best_breath {
+        Some((bpm, c)) => (Some(bpm), Some(c)),
+        None => (None, None),
     };
     Json(serde_json::json!({
         "state": fused,
