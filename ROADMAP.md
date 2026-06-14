@@ -203,12 +203,22 @@ Acceptance: a fresh Linux machine + 3 new boards → live dashboard, using only
 
 ### Phase 4 — Product app & packaging (a.k.a. Phase A — our own app)
 *Goal: it looks and feels like a product, not a research repo.*
-*Stack decision reopened 2026-06-13: a native shell is required for in-app serial
-flash/provision (browsers can't do serial), so a research spike + ADR picks the stack
-(Tauri v2 vs. web-UI + thin native helper vs. …) and defines a ThroughNet design system.
-Build our own screens/design; reference the inherited RuView app (`wifi-densepose-desktop`)
-for reusable mechanics only (NVS provisioning format, esptool flashing, `mdns-sd` usage),
-never its UI/branding.*
+*Stack **DECIDED 2026-06-14 — ADR-151: server-as-shell.** The research spike found that a
+native server we already ship can do serial itself and expose flash/provision over HTTP, so
+the browser never needs serial — collapsing the "native shell" requirement into the
+sensing-server binary. The product is **one self-contained binary**: the sensing-server serves
+an embedded from-scratch Lit UI (`rust-embed`) + localhost-only `/api/v1/setup/*` endpoints
+(native `espflash` flash + `--auto` provision; the server owns USB, the browser renders),
+launched app-like (Chromium `--app=` / `.desktop`), with a doctor preflight for the known Linux
+traps. Chosen over Tauri v2 / Electron / web+helper for: no new toolchain (CI stays
+`cargo build`), no system-webview dep (cleaner Linux install — no WebKitGTK runtime), no webview
+ceiling (real browser → latest CSS/WebGL/WebGPU), headless/always-on/multi-client capability, and
+it stays reusable as the inside of a Tauri wrap if a true native window is ever wanted. Honest
+limit accepted: serial flashing only on the machine running the server (run the one binary where
+the boards are). Build our own screens/design system; reference the inherited RuView app
+(`wifi-densepose-desktop`, ADR-052) for protocol facts only (NVS format), and drive our **own**
+proven tools (`provision.py --auto`, `espflash`, the server's `mdns-sd`), never its UI/non-working code.
+**Milestones A1–A4 in ADR-151 §7.***
 
 1. **Full UI overhaul — the inherited `ui/` is demo-ware and gets replaced, not
    patched.** The Observatory's skeleton/heatmap theatrics are decoration driven by
@@ -318,10 +328,14 @@ UI. See **Phase R** above. Current front:*
    (verified live), R2 multi-node auto-id + staleness-aware fusion, R3 scripted resilience
    gates (`--selftest`-green). Only the two R3 *live* runs (IP-flip, add-a-4th-board) remain,
    operator-in-the-loop. Full detail + status in **Phase R** above.
-3. **Phase A — our own app (CURRENT).** Research spike → ADR for app stack + ThroughNet design
-   system → build setup-baked-in + a polished presence/motion/breathing UI on
-   `/throughnet/status` (now also surfaces per-node `stale`), Linux first. Replaces the
-   CLI-first framing of Phase 3.
+3. **Phase A — our own app (CURRENT).** Research spike + stack **DECIDED (ADR-151:
+   server-as-shell)** 2026-06-14 — one self-contained sensing-server binary serving an
+   embedded from-scratch Lit UI + localhost `/api/v1/setup/*` (native `espflash` flash +
+   `--auto` provision), app-like launch, doctor preflight. **Next: milestone A1** — `app/`
+   (Vite + Lit + TS) design system + live presence/motion/breathing dashboard on
+   `/throughnet/status` (now also surfaces per-node `stale`) + `/ws/sensing`, Linux first.
+   Then A2 embed (`rust-embed`), A3 in-app setup, A4 single-binary packaging (ADR-151 §7).
+   Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
