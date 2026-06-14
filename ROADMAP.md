@@ -127,9 +127,21 @@ robustness first.*
 server via mDNS (subnet-correct pick over docker0) and stream; commit `aa27c13`. R2 **done**
 — `provision.py --auto` fleet auto-id + N-agnostic, staleness-aware fusion (fixes a phantom-
 presence gap from a dropped node); commit `d1a6341`. R3 **gates written + `--selftest`-green**
-(`tools/gate/resilience.py`); commit `034fc3d`. Remaining: the two R3 **live** runs are
-operator-in-the-loop (IP flip needs sudo; add-node needs a 4th board) — run when convenient.
-Phase R code is complete; the front advances to **Phase A** (our own app).*
+(`tools/gate/resilience.py`); commit `034fc3d`. **ip-change gate:** every component verified
+live (advert with all IPs, both boards resolve `(mDNS)`+`(on-subnet)`, 30 s watch armed,
+R2 staleness exclusion unit-tested) — the full continuous live re-point is **accepted +
+deferred** to a real deployment / router-DHCP change. *Lesson: on this box wlan0 is
+**systemd-networkd + iwd**; a manual `ip addr del` of the DHCP address breaks the default
+route/DNS (internet drop) and networkd re-adds it — do NOT manual-swap; use a temporary
+networkd static drop-in + `networkctl reconfigure`, or a router-side lease change.*
+**add-node live** still needs a 4th board. Phase R code is complete; front advances to
+**Phase A** (our own app).*
+
+*Phase R follow-up (small, found 2026-06-14): the `throughnet` node map is never evicted
+(only `node_states` is), so over a long run it accumulated bogus node ids from occasional
+malformed/stray UDP (a fresh server is clean — only nodes 2/3). The R2 staleness fix already
+keeps these out of fusion; mirror the `node_states` 60 s eviction onto the `throughnet` map
+to also drop them from `/throughnet/status` (keeps the app's node list clean).*
 
 **R1 — mDNS service discovery (router/IP-change resilience).** Boards push CSI to a static
 NVS `target_ip`; when the host IP changes (DHCP / new router) streaming silently dies — the
