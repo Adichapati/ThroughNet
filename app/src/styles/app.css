@@ -84,6 +84,67 @@ input[type=range]::-moz-range-thumb { width: 11px; height: 11px; background: var
   border-top-color: transparent; }
 .viewbtn.off .ic { border-radius: 1px; border-top-color: var(--ink); }
 
+/* ── primary nav (under the brand) ─────────────────────────── */
+.tn-nav { display: flex; gap: 14px; pointer-events: auto; }
+.tn-nav button { background: none; border: 0; cursor: pointer; padding: 2px 0;
+  font-family: var(--f-mono); font-size: 10px; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--ink-soft); border-bottom: 1.5px solid transparent; }
+.tn-nav button:hover { color: var(--ink); }
+.tn-nav button.on { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* ── home overlay cards (data over the diorama) ────────────── */
+.tn-card { position: fixed; z-index: 6; bottom: 34px; pointer-events: none;
+  background: var(--paper-3); border: 1px solid var(--ink); box-shadow: var(--drop); padding: 13px 15px; }
+.tn-card h4 { margin: 0 0 9px; font-family: var(--f-mono); font-size: 9px; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--ink-soft); font-weight: 400; }
+.tn-card--breath { left: 34px; width: 198px; transform: rotate(-.5deg); }
+.tn-card--nodes { right: 34px; width: 214px; transform: rotate(.4deg); }
+.breath-read { display: flex; align-items: baseline; gap: 6px; }
+.breath-read .bpm { font-family: var(--f-display); font-weight: 600; font-size: 34px; line-height: 1; }
+.breath-read .u { font-family: var(--f-mono); font-size: 10px; letter-spacing: .12em; color: var(--ink-soft); }
+.breath-wave { width: 100%; height: 26px; margin-top: 8px; }
+.breath-wave path { fill: none; stroke: var(--clay); stroke-width: 2; }
+.breath-conf { font-family: var(--f-mono); font-size: 10px; color: var(--ink-soft); margin-top: 6px; }
+.nd-row { display: flex; align-items: center; gap: 9px; font-size: 12px; padding: 4px 0; }
+.nd-row .gem { width: 10px; height: 10px; transform: rotate(45deg); border: 1.5px solid var(--ink); flex: none; background: var(--paper-3); }
+.nd-row .gem.present { background: var(--clay); }
+.nd-row .gem.stale { background: var(--paper); border-style: dashed; }
+.nd-row .st { margin-left: auto; font-family: var(--f-mono); font-size: 9px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--ink-soft); }
+
+/* ── secondary screens (nodes / events / settings) ─────────── */
+.tn-screen { position: fixed; inset: 0; z-index: 2; display: grid; place-items: center; background: var(--paper); }
+.tn-sheet { width: min(640px, 90vw); max-height: 76vh; overflow: auto; background: var(--paper-3);
+  border: 1px solid var(--ink); box-shadow: var(--drop); }
+.tn-sheet h2 { margin: 0; position: sticky; top: 0; background: var(--ink); color: var(--paper-3);
+  font-family: var(--f-mono); font-size: 9px; font-weight: 400; letter-spacing: .18em; text-transform: uppercase; padding: 9px 18px; }
+.tn-sheet .body { padding: 20px 22px 22px; }
+.tn-sheet .muted { font-size: 12px; color: var(--ink-soft); }
+.tn-trow { display: grid; grid-template-columns: 16px 1.1fr 1fr 1fr auto; gap: 12px; align-items: center;
+  padding: 12px 0; border-bottom: 1px solid var(--edge); font-size: 12px; }
+.tn-trow:last-child { border-bottom: 0; }
+.tn-trow .gem { width: 11px; height: 11px; transform: rotate(45deg); border: 1.5px solid var(--ink); background: var(--paper-3); }
+.tn-trow .gem.present { background: var(--clay); }
+.tn-trow .k { font-family: var(--f-mono); font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+.tn-trow .v { font-family: var(--f-mono); font-size: 11px; }
+.tn-pill { font-family: var(--f-mono); font-size: 9px; letter-spacing: .1em; text-transform: uppercase;
+  border: 1px solid var(--ink); padding: 2px 7px; }
+.tn-pill.ok { background: var(--sage); } .tn-pill.warn { background: var(--sand); } .tn-pill.bad { background: var(--clay); }
+.ev-row { display: flex; align-items: baseline; gap: 14px; padding: 9px 0; border-bottom: 1px solid var(--edge); }
+.ev-row:last-child { border-bottom: 0; }
+.ev-row time { font-family: var(--f-mono); font-size: 10px; color: var(--ink-soft); width: 78px; flex: none; }
+.ev-row .txt { font-size: 13px; }
+.ev-row .dot { width: 7px; height: 7px; transform: rotate(45deg); border: 1.5px solid var(--ink); flex: none; align-self: center; }
+.ev-row .dot.enter { background: var(--clay); } .ev-row .dot.move { background: var(--sand); }
+.ev-row .dot.leave { background: var(--paper); }
+.set-row { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--edge); }
+.set-row:last-child { border-bottom: 0; }
+.set-row .lbl { font-size: 13px; } .set-row .lbl .sub { font-family: var(--f-mono); font-size: 10px; color: var(--ink-soft); margin-top: 3px; }
+.set-row .spacer { flex: 1; }
+.set-row button { font-family: var(--f-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  padding: 8px 14px; border: 1px solid var(--ink); background: var(--paper-3); color: var(--ink); cursor: pointer; }
+.set-row button.cta { background: var(--ink); color: var(--paper-3); }
+
 /* ── live connection chip (top-right) ──────────────────────── */
 .tn-conn { position: fixed; top: 30px; right: 34px; z-index: 6; pointer-events: none;
   display: inline-flex; align-items: center; gap: 8px; background: var(--paper-3);
