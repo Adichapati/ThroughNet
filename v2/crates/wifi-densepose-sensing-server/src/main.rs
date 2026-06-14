@@ -5692,6 +5692,25 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                                 s.node_states.len()
                             );
                         }
+
+                        // Mirror the same 60 s policy onto the ThroughNet detector map,
+                        // which is otherwise never evicted — bogus node ids from stray /
+                        // malformed UDP would accumulate and leak into /throughnet/status.
+                        // Keyed on last frame arrival (not `last_update`, which stays None
+                        // for a node streaming pre-baseline).
+                        let tn_before = s.throughnet.len();
+                        s.throughnet.retain(|_id, det| {
+                            det.last_frame_time()
+                                .is_some_and(|t| now.duration_since(t) < stale)
+                        });
+                        let tn_evicted = tn_before - s.throughnet.len();
+                        if tn_evicted > 0 {
+                            info!(
+                                "Evicted {} stale ThroughNet node(s), {} active",
+                                tn_evicted,
+                                s.throughnet.len()
+                            );
+                        }
                     }
                 }
             }

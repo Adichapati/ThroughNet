@@ -432,6 +432,16 @@ impl LinkDetector {
             .is_some_and(|t| t.elapsed() > FUSION_STALE_AFTER)
     }
 
+    /// Instant of the most recent frame arrival (any frame, even before a baseline
+    /// exists or a window is scored). `None` if no frame ever landed. Mirrors
+    /// `NodeState::last_frame_time` so the server can evict the `throughnet` map on
+    /// the same 60 s policy as `node_states` — otherwise bogus node ids from stray
+    /// or malformed UDP accumulate here and leak into `/throughnet/status`.
+    /// (`last_update` can't serve this: it's `None` for a node streaming pre-baseline.)
+    pub fn last_frame_time(&self) -> Option<Instant> {
+        self.recent_frames.back().copied()
+    }
+
     /// This node's contribution to the fused room state (see [`fuse`]).
     pub fn verdict(&self) -> NodeVerdict {
         NodeVerdict {
@@ -790,5 +800,30 @@ mod tests {
         // Breathing is suppressed unless the fused state is present_still.
         let while_moving = [v(Some(true), Some(true), Some((15.0, 9.0)), false)];
         assert_eq!(fuse(&while_moving), ("present_moving", None));
+    }
+
+    #[test]
+    fn last_frame_time_tracks_arrival_without_baseline() {
+        // The eviction signal must register a streaming node even before any
+        // baseline exists or window is scored — that's exactly when `last_update`
+        // is still None, so map eviction can't rely on it.
+        let mut det = LinkDetector::new();
+        assert!(det.last_frame_time().is_none(), "no frame → None");
+
+        // A valid frame (>= HT_LTF_START + HT_LTF_LEN samples, non-zero RMS) arrives.
+        det.push_frame(&vec![1.0; HT_LTF_START + HT_LTF_LEN]);
+        assert!(
+            det.last_frame_time().is_some(),
+            "a streaming pre-baseline node must report a frame time"
+        );
+        assert!(
+            det.last_update.is_none(),
+            "pre-baseline: last_update stays None (would mis-evict a live node)"
+        );
+
+        // A malformed frame (too short to normalize) must not refresh the timer.
+        let prev = det.last_frame_time();
+        det.push_frame(&[1.0, 2.0, 3.0]);
+        assert_eq!(det.last_frame_time(), prev, "rejected frame leaves the timer unchanged");
     }
 }

@@ -137,11 +137,14 @@ networkd static drop-in + `networkctl reconfigure`, or a router-side lease chang
 **add-node live** still needs a 4th board. Phase R code is complete; front advances to
 **Phase A** (our own app).*
 
-*Phase R follow-up (small, found 2026-06-14): the `throughnet` node map is never evicted
-(only `node_states` is), so over a long run it accumulated bogus node ids from occasional
-malformed/stray UDP (a fresh server is clean — only nodes 2/3). The R2 staleness fix already
-keeps these out of fusion; mirror the `node_states` 60 s eviction onto the `throughnet` map
-to also drop them from `/throughnet/status` (keeps the app's node list clean).*
+*Phase R follow-up (small, found 2026-06-14 — **DONE 2026-06-14**): the `throughnet` node map
+was never evicted (only `node_states` was), so over a long run it accumulated bogus node ids
+from occasional malformed/stray UDP (a fresh server is clean — only nodes 2/3). The R2 staleness
+fix already kept these out of fusion; the `node_states` 60 s eviction is now **mirrored onto the
+`throughnet` map** (keyed on last frame arrival via `LinkDetector::last_frame_time()`, not
+`last_update` — the latter stays `None` for a node streaming pre-baseline and would mis-evict a
+live node), so they also drop from `/throughnet/status` (keeps the app's node list clean). Unit-
+tested (`last_frame_time_tracks_arrival_without_baseline`).*
 
 **R1 — mDNS service discovery (router/IP-change resilience).** Boards push CSI to a static
 NVS `target_ip`; when the host IP changes (DHCP / new router) streaming silently dies — the
