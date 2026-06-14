@@ -333,11 +333,13 @@ UI. See **Phase R** above. Current front:*
    embedded from-scratch Lit UI + localhost `/api/v1/setup/*` (native `espflash` flash +
    `--auto` provision), app-like launch, doctor preflight. **A1 in progress** — `app/`
    scaffolded (Vite + Lit + TS); the "Living Blueprint / Paper-craft" design system
-   (tokens + chrome kit) and the `tn-live-view` diorama (three.js presence/motion/breathing,
-   ported from the approved `app/prototypes/live-view.html`) are landed, mock-driven via a
-   control panel that stands in for `/throughnet/status` (now also surfaces per-node `stale`)
-   + `/ws/sensing`. Remaining A1: wire the real transport + the product cards (node health,
-   calibration status, event log, honest empty/degraded states), Linux first.
+   (tokens + chrome kit), the `tn-live-view` diorama (three.js presence/motion/breathing,
+   ported from `app/prototypes/live-view.html`), and the **first-run onboarding flow**
+   (`tn-onboarding`: a paper-tear cover intro → 6-step wizard prepare/flash/connect/place/
+   calibrate/done) are landed, mock-driven via a control panel + mock setup steps. App IA
+   decided: home = diorama-as-home; `tn-app` routes first-run→onboarding, `finish`→home.
+   Remaining A1: wire the real `/throughnet/status` (now surfaces per-node `stale`) +
+   `/ws/sensing` transport + home overlay cards + Nodes/Events/Settings, Linux first.
    Then A2 embed (`rust-embed`), A3 in-app setup, A4 single-binary packaging (ADR-151 §7).
    Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
