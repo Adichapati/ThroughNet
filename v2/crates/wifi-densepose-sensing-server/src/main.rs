@@ -5020,6 +5020,56 @@ async fn info_page() -> Html<String> {
     )
 }
 
+/// ADR-151 A2 — the built `app/` UI (`app/dist`), embedded into the binary.
+/// Present only with the `embed-ui` feature so the default build needs no dist.
+#[cfg(feature = "embed-ui")]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../../../app/dist"]
+struct EmbeddedUi;
+
+/// Serve one embedded asset by path, falling back to `index.html` (the app
+/// routes via query params, so any unknown path is the SPA shell).
+#[cfg(feature = "embed-ui")]
+fn ui_asset(path: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let p = if path.is_empty() { "index.html" } else { path };
+    if let Some(content) = EmbeddedUi::get(p) {
+        let mime = mime_guess::from_path(p).first_or_octet_stream();
+        return (
+            [(axum::http::header::CONTENT_TYPE, mime.as_ref())],
+            content.data.into_owned(),
+        )
+            .into_response();
+    }
+    match EmbeddedUi::get("index.html") {
+        Some(c) => (
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            c.data.into_owned(),
+        )
+            .into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "UI not embedded").into_response(),
+    }
+}
+
+/// Fallback handler for the embedded UI (`/assets/*` + SPA).
+#[cfg(feature = "embed-ui")]
+async fn serve_embedded_ui(uri: axum::http::Uri) -> axum::response::Response {
+    ui_asset(uri.path().trim_start_matches('/'))
+}
+
+/// `/` — serves the embedded app when built with `embed-ui`, else the info page.
+async fn root_handler() -> axum::response::Response {
+    #[cfg(feature = "embed-ui")]
+    {
+        ui_asset("index.html")
+    }
+    #[cfg(not(feature = "embed-ui"))]
+    {
+        use axum::response::IntoResponse;
+        info_page().await.into_response()
+    }
+}
+
 // ── UDP receiver task ────────────────────────────────────────────────────────
 
 async fn udp_receiver_task(state: SharedState, udp_port: u16) {
@@ -7033,7 +7083,7 @@ async fn main() {
     // HTTP server (serves UI + full DensePose-compatible REST API)
     let ui_path = args.ui_path.clone();
     let http_app = Router::new()
-        .route("/", get(info_page))
+        .route("/", get(root_handler))
         // Health endpoints (DensePose-compatible)
         .route("/health", get(health))
         .route("/health/health", get(health_system))
@@ -7120,7 +7170,15 @@ async fn main() {
         )
         .route("/api/v1/config/ground-truth", post(config_set_ground_truth))
         // Static UI files
-        .nest_service("/ui", ServeDir::new(&ui_path))
+        .nest_service("/ui", ServeDir::new(&ui_path));
+
+    // ADR-151 A2: serve the embedded `app/` UI at `/` (+ SPA asset fallback for
+    // /assets/*) when built with `--features embed-ui`. Off by default so the
+    // normal workspace build/test needs no `app/dist`.
+    #[cfg(feature = "embed-ui")]
+    let http_app = http_app.fallback(serve_embedded_ui);
+
+    let http_app = http_app
         // ADR-102: make the edge registry handle (Option<Arc<EdgeRegistry>>)
         // available to the /api/v1/edge/registry handler. None when disabled.
         .layer(Extension(edge_registry.clone()))
@@ -7151,6 +7209,9 @@ async fn main() {
         .await
         .expect("Failed to bind HTTP port");
     info!("HTTP server listening on {http_addr}");
+    #[cfg(feature = "embed-ui")]
+    info!("Open http://localhost:{}/ in your browser (embedded app)", args.http_port);
+    #[cfg(not(feature = "embed-ui"))]
     info!(
         "Open http://localhost:{}/ui/index.html in your browser",
         args.http_port
