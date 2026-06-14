@@ -43,6 +43,35 @@ input — each trip the right gate). A `SETTLE_S=10 s` post-phase allowance keep
 debounce/posture transient out of the steady-state metrics; latency is measured on
 the transient itself. Exit cleanly with code 0 (PASS) / 1 (FAIL).
 
+## Phase-R resilience gates — `resilience.py`
+
+Turns the two hard robustness requirements (ROADMAP Phase R) into measured
+pass/fail. Both gates need one operator action; the script samples
+`/api/v1/throughnet/status` before/after and scores the outcome.
+
+```bash
+python tools/gate/resilience.py --selftest                          # verify scorers, no hw
+python tools/gate/resilience.py --url http://localhost:8080 ip-change
+python tools/gate/resilience.py --url http://localhost:8080 add-node --out add.json
+```
+
+- **`ip-change`** — "changing the router/host IP must not break it". Records the
+  live nodes, prompts you to flip the host IP (DHCP renew / reassign `wlan0`),
+  then waits up to 90 s and **passes if every node that was live recovers** —
+  i.e. the firmware's mDNS watch re-resolved the server and streaming resumed.
+- **`add-node`** — "adding an ESP must not break it". Prompts you to provision +
+  power a new RX (`provision.py --auto`), then **passes if a new node id appears
+  and starts streaming while every existing node stays live** (undisturbed).
+
+Prereq: the fleet must be streaming with a baseline captured (so nodes report
+`last_update_ms`) — use `validate.py` to capture one first. A node is "live" if
+it reported a frame within ~12 s and the server hasn't flagged it `stale` (the
+server excludes stale nodes from fusion via `FUSION_STALE_AFTER`, so a node lost
+during an IP change can't pin the room to a phantom `present`). Scoring is pure
+functions verified by `--selftest` (8 cases: liveness filtering, IP-change
+recover/never-return/no-baseline, add-node join/no-new/disturbed/dead-new).
+Exit code 0 (PASS) / 1 (FAIL).
+
 ## Phase-2 acceptance validation — live on the 3-board fleet (2026-06-13)
 
 First end-to-end run of the harness against real hardware (driven phase-by-phase).
