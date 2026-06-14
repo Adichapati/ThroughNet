@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ThroughNet — Live View (paper-craft prototype)</title>
+<!--
+  ThroughNet Phase A — Main Live View prototype (ADR-151).
+  Aesthetic: "Living Blueprint / Paper-craft" (Make Me Pulse 2019 inspired).
+  - Off-white paper canvas, ink-charcoal UI.
+  - MeshToonMaterial pastels + custom post-process edge-detection outline pass
+    (Sobel on view-space normals + depth) => hand-drawn Moebius/architectural contours.
+  - RF links: thin black tubes, straight when still, rippling shader-displaced when moving.
+  - Presence: a soft morphing "smooth stone" that appears on present:true and scales
+    up/down at the exact breathing BPM.
+  - All state is mocked here via the control panel (stands in for /throughnet/status
+    + the /ws/sensing push); GSAP drives the liquid state-transitions.
+  Single self-contained file (CDN three.js + GSAP). Open directly, or serve with
+  `python -m http.server` from this folder if file:// blocks modules.
+-->
+<style>
+  :root{
+    /* paper + ink */
+    --paper:#F7F5F0; --paper-2:#F1ECE3; --paper-3:#FBF8F2;
+    --ink:#2B2A26; --ink-soft:#56524A; --line:#2B2A26; --edge:rgba(43,42,38,.48);
+    /* palette — mirrors the 3D forms */
+    --clay:#D89A85; --slate:#93A7BE; --sage:#9FB0A2; --sand:#D8C09A;
+    /* type */
+    --f-display:"Fraunces", Georgia, serif;
+    --f-ui:"Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    --f-mono:"Space Mono", ui-monospace, monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; height:100%; background:var(--paper); color:var(--ink);
+    font-family:var(--f-ui); overflow:hidden; }
+  #c{ position:fixed; inset:0; display:block; }
+  .overlay{ position:fixed; inset:0; pointer-events:none; z-index:4; }
+
+  /* ── architectural corner frame ───────────────────────────── */
+  .tn-frame{ position:fixed; inset:16px; pointer-events:none; z-index:3; border:1px solid var(--edge); }
+  .tn-frame::before,.tn-frame::after,.tn-frame>i::before,.tn-frame>i::after{
+    content:""; position:absolute; width:14px; height:14px; border:1.5px solid var(--ink); }
+  .tn-frame::before{ top:-1px; left:-1px; border-right:0; border-bottom:0; }
+  .tn-frame::after{ top:-1px; right:-1px; border-left:0; border-bottom:0; }
+  .tn-frame>i::before{ bottom:-1px; left:-1px; border-right:0; border-top:0; }
+  .tn-frame>i::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
+
+  /* ── banner: placed-paper label (wordmark, page/state titles) ─ */
+  .tn-banner{ display:inline-block; background:var(--paper-3); border:1px solid var(--ink);
+    color:var(--ink); font-family:var(--f-display); font-weight:600; text-transform:uppercase;
+    letter-spacing:.05em; line-height:1; padding:10px 17px 9px;
+    box-shadow:3px 4px 0 -1px rgba(43,42,38,.18); }
+  .tn-banner--lg{ font-size:27px; letter-spacing:.03em; padding:12px 22px 10px; }
+  .tn-banner--sm{ font-size:15px; letter-spacing:.12em; padding:7px 13px 6px; }
+
+  /* ── caption / readout box ─────────────────────────────────── */
+  .tn-cap{ display:inline-block; background:rgba(251,248,242,.9); border:1px solid var(--ink);
+    color:var(--ink-soft); font-size:12px; letter-spacing:.01em; line-height:1.45; padding:7px 11px; }
+  .tn-cap--tag{ font-family:var(--f-mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+    color:var(--ink); padding:4px 9px; }
+  .tn-cap--desc{ max-width:264px; }
+
+  /* ── layout anchors ────────────────────────────────────────── */
+  .tn-brand{ position:absolute; top:30px; left:34px; display:flex; flex-direction:column;
+    align-items:flex-start; gap:8px; transform:rotate(-1.2deg); }
+  .tn-state{ position:absolute; top:30px; left:50%; transform:translateX(-50%) rotate(.5deg);
+    display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
+  .tn-desc{ position:absolute; left:34px; bottom:34px; transform:rotate(-.6deg); }
+
+  /* ── 3D-anchored node + presence markers ───────────────────── */
+  .tag{ position:absolute; top:0; left:0; will-change:transform; transform:translate(-50%,-50%);
+    font-family:var(--f-mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--ink); white-space:nowrap; }
+  .tag .dot{ display:inline-block; width:5px; height:5px; border:1px solid var(--ink);
+    transform:rotate(45deg); margin-right:7px; vertical-align:middle; background:var(--paper-3); }
+  .tag.muted{ color:var(--ink-soft); }
+  .tag.presence{ font-size:10px; }
+
+  /* ── control panel (mock state driver) ─────────────────────── */
+  .panel{ position:fixed; right:34px; bottom:34px; width:262px; pointer-events:auto; z-index:6;
+    background:var(--paper-3); border:1px solid var(--ink); box-shadow:3px 4px 0 -1px rgba(43,42,38,.18); }
+  .panel h2{ margin:0; background:var(--ink); color:var(--paper-3); font-family:var(--f-mono);
+    font-size:9px; font-weight:400; letter-spacing:.16em; text-transform:uppercase; padding:7px 14px; }
+  .panel-body{ padding:12px 15px 13px; }
+  .row{ display:flex; align-items:center; justify-content:space-between; margin:9px 0; }
+  .row label{ font-size:12px; letter-spacing:.02em; }
+  .seg{ display:flex; border:1px solid var(--ink); background:var(--paper); }
+  .seg button{ font-family:var(--f-mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+    padding:5px 10px; background:transparent; color:var(--ink); border:0; cursor:pointer; }
+  .seg button + button{ border-left:1px solid var(--ink); }
+  .seg button.on{ background:var(--ink); color:var(--paper-3); }
+  .seg button:hover:not(.on){ background:var(--paper-2); }
+  input[type=range]{ -webkit-appearance:none; appearance:none; width:128px; height:1px;
+    background:var(--ink); outline:none; }
+  input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; appearance:none;
+    width:12px; height:12px; background:var(--paper-3); border:1.5px solid var(--ink);
+    cursor:pointer; transform:rotate(45deg); }
+  input[type=range]::-moz-range-thumb{ width:11px; height:11px; background:var(--paper-3);
+    border:1.5px solid var(--ink); cursor:pointer; }
+  .bpmval{ font-family:var(--f-mono); font-size:11px; width:30px; text-align:right; }
+  .json{ margin-top:12px; border-top:1px solid var(--edge); padding-top:11px;
+    font-family:var(--f-mono); font-size:10px; line-height:1.7; color:var(--ink-soft); white-space:pre; }
+  .json .k{ color:var(--ink); }
+  /* ── viewport control: stop/start the auto-orbit ──────────── */
+  .viewbtn{ position:fixed; left:50%; bottom:30px; transform:translateX(-50%) rotate(-.5deg);
+    pointer-events:auto; z-index:6; display:inline-flex; align-items:center; gap:9px;
+    background:var(--paper-3); border:1px solid var(--ink); color:var(--ink);
+    font-family:var(--f-mono); font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+    padding:8px 15px; cursor:pointer; box-shadow:3px 4px 0 -1px rgba(43,42,38,.18); }
+  .viewbtn:hover{ background:var(--paper-2); }
+  .viewbtn .ic{ width:8px; height:8px; border:1.5px solid var(--ink); border-radius:50%;
+    border-top-color:transparent; }                       /* a little spinner mark when orbiting */
+  .viewbtn.off .ic{ border-radius:1px; border-top-color:var(--ink); }  /* a solid square when paused */
+  .err{ position:fixed; inset:0; display:none; place-items:center; padding:40px; text-align:center;
+    font-family:var(--f-mono); font-size:13px; color:var(--ink); background:var(--paper); z-index:9; }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="tn-frame"><i></i></div>
+
+<div class="overlay" id="overlay">
+  <div class="tn-brand">
+    <div class="tn-banner tn-banner--sm">ThroughNet</div>
+    <div class="tn-cap tn-cap--tag">Live View</div>
+  </div>
+
+  <div class="tn-state">
+    <div class="tn-banner tn-banner--lg" id="state-title">Present · Still</div>
+    <div class="tn-cap tn-cap--tag" id="state-sub">15.0 bpm · breathing</div>
+  </div>
+
+  <div class="tag" id="tag-tx"><span class="dot"></span>TX · illuminator</div>
+  <div class="tag muted" id="tag-rx2"><span class="dot"></span>RX · node 2</div>
+  <div class="tag muted" id="tag-rx3"><span class="dot"></span>RX · node 3</div>
+  <div class="tag presence" id="tag-presence"></div>
+
+  <div class="tn-desc">
+    <div class="tn-cap tn-cap--desc">Camera-free presence, motion &amp; breathing — sensed from Wi-Fi alone.</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>state driver · mock /throughnet/status</h2>
+  <div class="panel-body">
+    <div class="row">
+      <label>presence</label>
+      <div class="seg" id="seg-present">
+        <button data-v="1" class="on">present</button>
+        <button data-v="0">absent</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>motion</label>
+      <div class="seg" id="seg-moving">
+        <button data-v="0" class="on">still</button>
+        <button data-v="1">moving</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>breathing</label>
+      <div class="seg" id="seg-breath">
+        <button data-v="1" class="on">on</button>
+        <button data-v="0">off</button>
+      </div>
+    </div>
+    <div class="row">
+      <label>bpm</label>
+      <div style="display:flex;align-items:center;gap:9px;">
+        <input id="bpm" type="range" min="6" max="30" step="0.5" value="15">
+        <span class="bpmval" id="bpmval">15.0</span>
+      </div>
+    </div>
+    <div class="json" id="json"></div>
+  </div>
+</div>
+
+<button class="viewbtn" id="viewbtn"><span class="ic"></span><span id="viewlbl">auto-orbit · on</span></button>
+
+<div class="err" id="err"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const fail = (e)=>{ const d=document.getElementById('err');
+  d.style.display='grid'; d.textContent='WebGL prototype failed to start:\n\n'+(e&&e.message||e); console.error(e); };
+
+try {
+  // ── palette ────────────────────────────────────────────────
+  const PAPER = 0xF7F5F0, GROUND = 0xF1EEE6, INK = 0x2B2A26;
+  const CLAY  = 0xE7BFAE;   // presence gem — soft pastel coral-terracotta
+  const SAND  = 0xE4D3B4;   // TX illuminator crystal — pale amber
+  const SLATE = 0xAFC0D2;   // RX node crystals — pastel dusty blue
+  const STONE = 0xE0D6C4, STONE2 = 0xD7C8B0;   // the room platform / pavers — pale sandstone
+
+  // ── renderer / scene / camera ──────────────────────────────
+  const canvas = document.getElementById('c');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+
+  const scene = new THREE.Scene();
+  // soft gradient sky (pale-cool → warm pink at the horizon) — the Nomadic-Tribe backdrop.
+  // toggled off during the normal pass so silhouettes still read against black.
+  const skyTex = (()=>{ const cv=document.createElement('canvas'); cv.width=8; cv.height=256;
+    const x=cv.getContext('2d'); const g=x.createLinearGradient(0,0,0,256);
+    g.addColorStop(0.00,'#E9ECF0'); g.addColorStop(0.45,'#F3ECE6');
+    g.addColorStop(0.78,'#F0DACE'); g.addColorStop(1.00,'#EAD7CC');
+    x.fillStyle=g; x.fillRect(0,0,8,256);
+    const t=new THREE.CanvasTexture(cv); t.colorSpace=THREE.SRGBColorSpace; return t; })();
+  scene.background = skyTex;
+  // gentle haze so only the far meadow edge melts into the horizon (infinite-field feel)
+  scene.fog = new THREE.Fog(0xEDE3D9, 12.0, 30.0);
+
+  const camera = new THREE.PerspectiveCamera(42, innerWidth/innerHeight, 0.1, 100);
+  const CAM = new THREE.Vector3(0.12, 1.16, 4.55);   // near eye-level — take in the meadow + sky
+  camera.position.copy(CAM);
+  const LOOK = new THREE.Vector3(0, 0.50, 0);
+  camera.lookAt(LOOK);
+
+  // mouse-drag orbit + a slow living auto-rotate you can grab and stop
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.copy(LOOK);
+  controls.enableDamping = true; controls.dampingFactor = 0.06;
+  controls.enablePan = false;
+  controls.minDistance = 2.4; controls.maxDistance = 8.0;
+  controls.minPolarAngle = 0.35; controls.maxPolarAngle = 1.46;  // never dip below the floor
+  controls.autoRotate = true; controls.autoRotateSpeed = 0.35;
+  controls.update();
+
+  // ── lights (toon banding) ──────────────────────────────────
+  scene.add(new THREE.AmbientLight(0xfff8ec, 1.05));
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xEDE6D9, 0.9); scene.add(hemi);
+  const key = new THREE.DirectionalLight(0xffffff, 1.05); key.position.set(3, 5, 2.5); scene.add(key);
+
+  // light 3-tone ramp => soft flat pastel fills; the black outline does the "drawing" (ligne claire)
+  const toneMap = (()=>{ const d=new Uint8Array([196,222,244,255]);
+    const t=new THREE.DataTexture(d, d.length, 1, THREE.RedFormat);
+    t.minFilter=t.magFilter=THREE.NearestFilter; t.needsUpdate=true; return t; })();
+  const toon = (color)=> new THREE.MeshToonMaterial({ color, gradientMap:toneMap });
+
+  // ── groups: outlined (gets the edge pass) vs deco (color only) ─
+  const outlineGroup = new THREE.Group();   // nodes + presence stone
+  const decoGroup    = new THREE.Group();   // ground, shadows, RF links
+  scene.add(outlineGroup, decoGroup);
+
+  // ── ground sheet + faint blueprint grid ────────────────────
+  // hand-drawn paper grass/ground: ink stipple + grass tufts + fiddlehead curls (refs 2 & 3)
+  const gridTex = (()=>{ const s=1024, cv=document.createElement('canvas'); cv.width=cv.height=s;
+    const x=cv.getContext('2d'); x.fillStyle='#E7E8DC'; x.fillRect(0,0,s,s);  // pale sage paper
+    x.lineCap='round'; x.lineJoin='round';
+    // sparse stipple grain
+    x.fillStyle='rgba(43,42,38,0.20)';
+    for(let i=0;i<1500;i++){ x.beginPath(); x.arc(Math.random()*s,Math.random()*s,0.5+Math.random()*0.8,0,6.283); x.fill(); }
+    // little grass tufts — a few short strokes splaying from a base point
+    for(let i=0;i<560;i++){ const px=Math.random()*s, py=Math.random()*s, h=4+Math.random()*7;
+      x.strokeStyle='rgba(43,42,38,'+(0.32+Math.random()*0.2)+')'; x.lineWidth=0.8;
+      for(let b=-1;b<=1;b++){ x.beginPath(); x.moveTo(px,py);
+        x.quadraticCurveTo(px+b*2, py-h*0.6, px+b*3+(Math.random()*2-1), py-h); x.stroke(); } }
+    // occasional fiddlehead curl sprout
+    x.strokeStyle='rgba(43,42,38,0.4)'; x.lineWidth=0.9;
+    for(let i=0;i<70;i++){ const px=Math.random()*s, py=Math.random()*s;
+      x.beginPath(); x.moveTo(px,py);
+      for(let a=0;a<3.0;a+=0.3){ const r=1.4+a*1.5; x.lineTo(px+Math.cos(a*2)*r, py-a*3-Math.sin(a*2)*r); }
+      x.stroke(); }
+    const t=new THREE.CanvasTexture(cv); t.anisotropy=8; return t; })();
+  gridTex.wrapS = gridTex.wrapT = THREE.RepeatWrapping; gridTex.repeat.set(4.6, 4.6);
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(11, 96),
+    new THREE.MeshBasicMaterial({ map:gridTex, color:0xF6F4EE }));
+  ground.rotation.x = -Math.PI/2; ground.position.y = 0; decoGroup.add(ground);
+
+  // soft radial contact-shadow texture
+  const shadowTex = (()=>{ const s=256, cv=document.createElement('canvas'); cv.width=cv.height=s;
+    const x=cv.getContext('2d'); const g=x.createRadialGradient(s/2,s/2,0,s/2,s/2,s/2);
+    g.addColorStop(0,'rgba(43,42,38,0.30)'); g.addColorStop(0.55,'rgba(43,42,38,0.10)');
+    g.addColorStop(1,'rgba(43,42,38,0)'); x.fillStyle=g; x.fillRect(0,0,s,s);
+    return new THREE.CanvasTexture(cv); })();
+  const contactShadow = (r)=>{ const m=new THREE.Mesh(new THREE.PlaneGeometry(r,r),
+    new THREE.MeshBasicMaterial({ map:shadowTex, transparent:true, depthWrite:false }));
+    m.rotation.x=-Math.PI/2; m.position.y=0.004; decoGroup.add(m); return m; };
+
+  // ── the "room": a low stone platform under the presence, ringed by pavers ──
+  // reads as the sensed floor — the three sensors stand on its rim, presence hovers in the middle.
+  const platform = new THREE.Mesh(new THREE.CylinderGeometry(1.7, 1.78, 0.045, 56), toon(STONE));
+  platform.position.y = 0.022; outlineGroup.add(platform);
+  const inlay = new THREE.Mesh(new THREE.TorusGeometry(1.34, 0.016, 6, 72), toon(STONE2));
+  inlay.rotation.x=-Math.PI/2; inlay.position.y=0.05; outlineGroup.add(inlay);   // drawn floor-ring
+  // flat flagstones — an irregular laid ring (varied size/shape/angle) so it reads as a stone floor, not a cog
+  function paver(x,z,r,rot,col,sides){ const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,0.04,sides), toon(col));
+    m.position.set(x,0.05,z); m.rotation.y=rot; m.scale.set(1,1,0.66+Math.random()*0.3); outlineGroup.add(m); return m; }
+  for(let i=0;i<12;i++){ const a=i/12*6.283+(Math.random()-0.5)*0.2, rr=1.46+Math.random()*0.18;
+    paver(Math.cos(a)*rr, Math.sin(a)*rr, 0.16+Math.random()*0.07, a+Math.random()*0.6,
+          i%2?STONE2:STONE, 4+((Math.random()*3)|0)); }
+  // entrance stepping-stones drifting out toward the viewer (+z)
+  for(let i=0;i<3;i++) paver((i%2?1:-1)*(0.2+i*0.06), 2.15+i*0.66, 0.24-i*0.03, Math.random()*6.28, STONE, 5);
+
+  // ── nodes (the 3 ESP32 sensors) — bigger faceted crystals, floating off the floor ──
+  const NODE_Y = 0.64;
+  const nodeGeo = new THREE.OctahedronGeometry(0.18, 0); // larger faceted quartz crystal (Nomadic Tribe)
+  const nodeObjs = [];
+  const mkNode = (pos, mat, rot)=>{ const m=new THREE.Mesh(nodeGeo, mat);
+    m.position.set(pos.x, NODE_Y, pos.z); m.scale.set(1.12, 1.95, 1.12); m.rotation.y = rot;
+    outlineGroup.add(m);
+    const disc=new THREE.Mesh(new THREE.CylinderGeometry(0.17,0.17,0.04,6), toon(STONE2));
+    disc.position.set(pos.x,0.085,pos.z); disc.rotation.y=rot; outlineGroup.add(disc); // sensor footing
+    contactShadow(0.6).position.set(pos.x,0.078,pos.z);                                  // hover shadow
+    nodeObjs.push({ mesh:m, baseY:NODE_Y, phase:Math.random()*6.28 }); return m; };
+  const P_TX  = new THREE.Vector3( 0.0,  NODE_Y, -1.5);
+  const P_RX2 = new THREE.Vector3(-1.5,  NODE_Y,  0.98);
+  const P_RX3 = new THREE.Vector3( 1.5,  NODE_Y,  0.98);
+  const nTX  = mkNode(P_TX,  toon(SAND),  0.3);
+  const nRX2 = mkNode(P_RX2, toon(SLATE), -0.6);
+  const nRX3 = mkNode(P_RX3, toon(SLATE),  0.9);
+  // dressing stays clear of the sensors + the central stage
+  const clearOfNodes = (x,z,pad)=> [P_TX,P_RX2,P_RX3].every(p=>Math.hypot(x-p.x,z-p.z)>pad);
+
+  // ── presence: a floating faceted gem (the detected person) — crisp facets, not a blob ──
+  const GEM_Y = 0.96, GEM_TALL = 1.4;
+  const gemGeo = new THREE.IcosahedronGeometry(0.46, 0);  // 20 flat facets → a crisp cut crystal (not a blob)
+  const gem = new THREE.Mesh(gemGeo, toon(CLAY));
+  gem.position.set(0, GEM_Y, 0); gem.scale.set(0.9, GEM_TALL, 0.9);
+  gem.rotation.set(0.13, 0.4, 0.06); outlineGroup.add(gem);   // stand it on a point, hand-tilted
+  // sensing aura — a thin outlined ring on the floor beneath the gem, pulses with the breath
+  const aura = new THREE.Mesh(new THREE.TorusGeometry(0.64, 0.02, 8, 60), toon(CLAY));
+  aura.rotation.x = -Math.PI/2; aura.position.y = 0.1; outlineGroup.add(aura);
+  const stoneShadow = contactShadow(1.3); stoneShadow.position.set(0,0.08,0);
+
+  // ── RF links (thin ink tubes; ripple when moving) ──────────
+  const linkMat = new THREE.MeshBasicMaterial({ color:INK });
+  const SEG = 54;
+  function mkLink(a,b){ const m=new THREE.Mesh(new THREE.BufferGeometry(), linkMat);
+    decoGroup.add(m); return { mesh:m, a:a.clone(), b:b.clone() }; }
+  const links = [ mkLink(P_TX,P_RX2), mkLink(P_TX,P_RX3) ];
+  const _up = new THREE.Vector3(0,1,0);
+  function updateLink(L, t){
+    const dir = new THREE.Vector3().subVectors(L.b, L.a);
+    const len = dir.length(); dir.normalize();
+    let side = new THREE.Vector3().crossVectors(dir,_up);
+    if(side.lengthSq()<1e-4) side.set(1,0,0); side.normalize();
+    const up2 = new THREE.Vector3().crossVectors(side,dir).normalize();
+    const pts=[]; const amp=0.085*S.motion;
+    for(let i=0;i<=SEG;i++){ const s=i/SEG;
+      const p = new THREE.Vector3().copy(L.a).addScaledVector(dir, len*s);
+      const env = Math.sin(s*Math.PI);                 // pinned at the two nodes
+      const ph  = s*9.0 - t*7.0;
+      p.addScaledVector(side, Math.sin(ph)*amp*env);
+      p.addScaledVector(up2,  Math.cos(ph*0.8)*amp*0.7*env);
+      pts.push(p); }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    L.mesh.geometry.dispose();
+    L.mesh.geometry = new THREE.TubeGeometry(curve, SEG, 0.02, 6, false);
+  }
+
+  // ── ambient scene dressing: a few rocks + flora (same language, sparse) ────
+  const ROCK = 0xBCC8BC, ROCK2 = 0xD8BCAE;        // pastel sage stone / dusty terracotta
+  const LEAF = 0xB4C7B0, LEAF2 = 0xAAC2C6;         // soft greens
+  const swayers = [];                              // wind-swayed flora pivots
+
+  function rock(x,z,r,color){ const g=new THREE.IcosahedronGeometry(r,1);
+    const p=g.attributes.position;                 // squash + jitter → a boulder, not a ball
+    for(let i=0;i<p.count;i++){ const v=new THREE.Vector3().fromBufferAttribute(p,i);
+      v.y*=0.7; v.multiplyScalar(0.88+Math.random()*0.24); p.setXYZ(i,v.x,v.y,v.z); }
+    g.computeVertexNormals();
+    const m=new THREE.Mesh(g, toon(color)); m.position.set(x, r*0.55, z);
+    m.rotation.y=Math.random()*6.28; outlineGroup.add(m);
+    contactShadow(r*3.4).position.set(x,0.004,z); return m; }
+
+  function plant(x,z,h,color){ const pivot=new THREE.Object3D(); pivot.position.set(x,0,z);
+    outlineGroup.add(pivot);
+    const c=new THREE.CatmullRomCurve3([ new THREE.Vector3(0,0,0),
+      new THREE.Vector3(0.02*h,0.45*h,0.01*h), new THREE.Vector3(-0.03*h,0.8*h,0),
+      new THREE.Vector3(0.04*h,h,0.02*h) ]);
+    pivot.add(new THREE.Mesh(new THREE.TubeGeometry(c,14,0.016,6,false), toon(color)));
+    for(const u of [0.55,0.8,1.0]){ const pt=c.getPoint(u);
+      const leaf=new THREE.Mesh(new THREE.SphereGeometry(0.05*h,8,6), toon(color));
+      leaf.scale.set(1.7,0.6,1.0); leaf.position.copy(pt);
+      leaf.position.x += 0.06*h*((u-0.5)>0?1:-1); leaf.rotation.z=u*5.0; pivot.add(leaf); }
+    contactShadow(h*0.7).position.set(x,0.004,z);
+    swayers.push({ pivot, amp:0.05+Math.random()*0.04, speed:0.6+Math.random()*0.5, phase:Math.random()*6.28 });
+    return pivot; }
+
+  // distant trees — trunk + faceted rounded canopy (paper-craft, outlined)
+  function tree(x,z,s){ const g=new THREE.Group(); g.position.set(x,0,z);
+    const trunk=new THREE.Mesh(new THREE.CylinderGeometry(0.035*s,0.06*s,0.5*s,6), toon(0xCBB59C));
+    trunk.position.y=0.25*s; g.add(trunk);
+    const cm=toon(0xB0C2A6);
+    for(const [cx,cy,cz,cr] of [[0,0.66,0,0.36],[0.24,0.58,0.06,0.26],[-0.22,0.6,-0.05,0.24],[0.05,0.84,0,0.23]]){
+      const m=new THREE.Mesh(new THREE.IcosahedronGeometry(cr*s,1), cm);
+      m.position.set(cx*s,cy*s,cz*s); m.scale.y=0.92; m.rotation.y=Math.random()*6.28; g.add(m); }
+    g.rotation.y=Math.random()*6.28; outlineGroup.add(g);
+    contactShadow(s*1.25).position.set(x,0.004,z); return g; }
+
+  // 3D grass — scattered swaying blade tufts (outlined)
+  const bladeMat = toon(0xB6C9A8); bladeMat.side = THREE.DoubleSide;
+  function tuftGeo(){ const pos=[]; const n=4;
+    for(let b=0;b<n;b++){ const a=(b/n)*6.283+Math.random()*0.5;
+      const px=Math.cos(a+1.57), pz=Math.sin(a+1.57), w=0.016, h=0.13+Math.random()*0.08;
+      pos.push(-px*w,0,-pz*w, px*w,0,pz*w, Math.cos(a)*0.04,h,Math.sin(a)*0.04); }
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3)); g.computeVertexNormals(); return g; }
+  const tuftGeos=[tuftGeo(),tuftGeo(),tuftGeo(),tuftGeo(),tuftGeo()];
+  function grassAt(x,z,s){ const m=new THREE.Mesh(tuftGeos[(Math.random()*tuftGeos.length)|0], bladeMat);
+    m.position.set(x,0,z); m.scale.setScalar(s); m.rotation.y=Math.random()*6.28; outlineGroup.add(m);
+    swayers.push({ pivot:m, amp:0.05+Math.random()*0.05, speed:0.8+Math.random()*0.7, phase:Math.random()*6.28 }); }
+
+  // ── placement: spread out, sensors + central stage kept clear so the heroes read ────
+  const rocks=[[-2.7,-1.1,0.30,ROCK],[2.9,-0.8,0.24,ROCK2],[2.4,2.2,0.20,ROCK],
+    [-2.5,2.2,0.24,ROCK2],[3.6,0.7,0.16,ROCK],[-3.7,0.3,0.18,ROCK2],[0.9,-3.0,0.17,ROCK],
+    [-1.0,3.4,0.13,ROCK2],[3.9,-1.8,0.15,ROCK],[-3.3,-2.0,0.16,ROCK2],[2.4,-2.7,0.12,ROCK],
+    [-2.0,-2.9,0.13,ROCK],[4.5,1.7,0.14,ROCK2],[-4.5,1.5,0.15,ROCK],[4.7,-0.6,0.13,ROCK2]];
+  for(const [x,z,r,c] of rocks) if(clearOfNodes(x,z,0.7)) rock(x,z,r,c);
+  // tiny pebble scatter dotting the meadow (like the reference)
+  for(let i=0;i<24;i++){ const a=Math.random()*6.283, rr=2.4+Math.random()*4.6;
+    const x=Math.cos(a)*rr, z=Math.sin(a)*rr*0.9;
+    if(clearOfNodes(x,z,0.7)) rock(x,z,0.06+Math.random()*0.05, i%2?ROCK:ROCK2); }
+  plant(-3.1,1.4,0.5,LEAF); plant(3.2,-1.5,0.44,LEAF2); plant(-1.9,3.1,0.36,LEAF);
+  plant(1.9,3.1,0.34,LEAF2); plant(-3.9,-0.7,0.4,LEAF2); plant(3.0,2.6,0.3,LEAF);
+
+  // trees clustered into a few groves — open meadow between, not a full ring
+  function grove(cx,cz,n,sBase){ for(let i=0;i<n;i++){ const a=Math.random()*6.283, rr=Math.random()*1.4;
+    tree(cx+Math.cos(a)*rr, cz+Math.sin(a)*rr*0.8, sBase*(0.78+Math.random()*0.5)); } }
+  grove(-4.8,-3.7,4,1.05);   // left grove
+  grove(4.9,-3.1,3,1.1);     // right grove
+  grove(0.4,-5.8,3,0.95);    // far-centre grove
+
+  // grass field — sparse, clear of the platform + sensors
+  for(let i=0;i<160;i++){ const a=Math.random()*6.283, rr=2.1+Math.random()*4.5;
+    const x=Math.cos(a)*rr, z=Math.sin(a)*rr*0.92;
+    if(Math.hypot(x,z)<2.05 || !clearOfNodes(x,z,0.7)) continue;
+    grassAt(x,z,0.85+Math.random()*0.85); }
+  // taller tufts near the horizon — a silhouette fringe (reference look), fogged soft
+  for(let i=0;i<48;i++){ const a=Math.random()*6.283, rr=6.0+Math.random()*3.5;
+    grassAt(Math.cos(a)*rr, Math.sin(a)*rr*0.9, 1.6+Math.random()*1.2); }
+
+  // soft outlined cloud puffs in the sky
+  function cloud(x,y,z,s){ const g=new THREE.Group(); g.position.set(x,y,z);
+    const cm=toon(0xFBF7F1);
+    for(const [bx,by,br] of [[0,0,1],[0.72,0.06,0.7],[-0.72,0.04,0.66],[0.32,0.32,0.52],[-0.36,0.28,0.48]]){
+      const m=new THREE.Mesh(new THREE.SphereGeometry(br*s,10,8), cm);
+      m.position.set(bx*s,by*s,0); m.scale.y=0.66; g.add(m); }
+    outlineGroup.add(g); return g; }
+  cloud(-2.9,2.6,-5.0,0.65); cloud(3.1,3.1,-5.8,0.85); cloud(0.3,3.4,-6.8,0.7); cloud(-4.8,2.9,-6.2,0.72);
+
+  // (distant mountains removed — clean gradient-sky horizon; the grass fringe + soft fog carry the depth)
+
+  // ── post-process: normal+depth Sobel edge-detection ────────
+  const dpr = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const normalRT = new THREE.WebGLRenderTarget(dpr.x, dpr.y);
+  normalRT.depthTexture = new THREE.DepthTexture(dpr.x, dpr.y);
+  normalRT.depthTexture.format = THREE.DepthFormat;
+  normalRT.depthTexture.type = THREE.UnsignedShortType;
+  const colorRT = new THREE.WebGLRenderTarget(dpr.x, dpr.y);
+  const normalMat = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide });
+
+  // paper-tooth grain (screen-fixed) — gives the whites the crunchy printed feel
+  const grainTex = (()=>{ const s=256, cv=document.createElement('canvas'); cv.width=cv.height=s;
+    const x=cv.getContext('2d'); const img=x.createImageData(s,s);
+    for(let i=0;i<s*s;i++){ const v=200+Math.random()*55;
+      img.data[i*4]=img.data[i*4+1]=img.data[i*4+2]=v; img.data[i*4+3]=255; }
+    x.putImageData(img,0,0); const t=new THREE.CanvasTexture(cv);
+    t.wrapS=t.wrapT=THREE.RepeatWrapping; return t; })();
+
+  const composite = new THREE.ShaderMaterial({
+    uniforms:{
+      uColor:{value:colorRT.texture}, uNormal:{value:normalRT.texture}, uDepth:{value:normalRT.depthTexture},
+      uTexel:{value:new THREE.Vector2(1/dpr.x,1/dpr.y)},
+      uNear:{value:camera.near}, uFar:{value:camera.far},
+      uTime:{value:0}, uInk:{value:new THREE.Color(INK)}, uEdge:{value:1.0},
+      uGrain:{value:grainTex}, uRes:{value:new THREE.Vector2(dpr.x,dpr.y)},
+    },
+    vertexShader:`varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }`,
+    fragmentShader:`
+      #include <packing>
+      varying vec2 vUv;
+      uniform sampler2D uColor, uNormal, uDepth, uGrain;
+      uniform vec2 uTexel, uRes; uniform float uNear, uFar, uTime, uEdge; uniform vec3 uInk;
+      float linDepth(vec2 uv){ float f=texture2D(uDepth,uv).x;
+        float vz=perspectiveDepthToViewZ(f,uNear,uFar); return viewZToOrthographicDepth(vz,uNear,uFar); }
+      float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+      void main(){
+        vec2 e=uTexel*1.3; vec3 col=texture2D(uColor,vUv).rgb;
+        vec3 nC=texture2D(uNormal,vUv).rgb;
+        vec3 nL=texture2D(uNormal,vUv-vec2(e.x,0.)).rgb, nR=texture2D(uNormal,vUv+vec2(e.x,0.)).rgb;
+        vec3 nU=texture2D(uNormal,vUv+vec2(0.,e.y)).rgb, nD=texture2D(uNormal,vUv-vec2(0.,e.y)).rgb;
+        float ne=length(nC-nL)+length(nC-nR)+length(nC-nU)+length(nC-nD);
+        float dC=linDepth(vUv);
+        float de=abs(dC-linDepth(vUv-vec2(e.x,0.)))+abs(dC-linDepth(vUv+vec2(e.x,0.)))
+                +abs(dC-linDepth(vUv+vec2(0.,e.y)))+abs(dC-linDepth(vUv-vec2(0.,e.y)));
+        float edge=max( smoothstep(0.055,0.20,ne), smoothstep(0.015,0.08,de) ) * uEdge;
+        // paper tooth — visible grain, stronger in light/white areas (crunchy whites)
+        vec2 guv = vUv * uRes / 256.0;
+        float paper = texture2D(uGrain, guv).r;
+        float hg = hash(vUv*uRes*0.5 + uTime);
+        float grain = mix(paper, hg, 0.35);
+        float lum = dot(col, vec3(0.299,0.587,0.114));
+        float tooth = mix(0.05, 0.22, smoothstep(0.45,1.0,lum));
+        col *= 1.0 - tooth*(1.0 - grain);
+        float vig=smoothstep(1.4,0.35,length(vUv-0.5)); col=mix(col*0.985,col,vig);
+        gl_FragColor=vec4(mix(col,uInk,clamp(edge,0.,1.)),1.0);
+      }`,
+  });
+  const quadScene = new THREE.Scene();
+  quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2), composite));
+  const quadCam = new THREE.Camera();
+
+  // ── state (mock /throughnet/status driver) ─────────────────
+  const S = { present:true, moving:false, breathing:true, bpm:15,
+              motion:0, baseScale:1, phase:0 };
+
+  // ── control panel wiring ───────────────────────────────────
+  function seg(id, on){ const wrap=document.getElementById(id);
+    wrap.querySelectorAll('button').forEach(b=> b.classList.toggle('on', (+b.dataset.v)===(on?1:0))); }
+  document.getElementById('seg-present').onclick = e=>{ if(!e.target.dataset.v) return;
+    S.present = e.target.dataset.v==='1'; seg('seg-present',S.present);
+    gsap.to(S,{ baseScale:S.present?1:0, duration:S.present?1.05:0.6,
+               ease:S.present?'elastic.out(1,0.55)':'power2.in' }); refreshJSON(); };
+  document.getElementById('seg-moving').onclick = e=>{ if(!e.target.dataset.v) return;
+    S.moving = e.target.dataset.v==='1'; seg('seg-moving',S.moving);
+    gsap.to(S,{ motion:S.moving?1:0, duration:0.85, ease:'power2.inOut' }); refreshJSON(); };
+  document.getElementById('seg-breath').onclick = e=>{ if(!e.target.dataset.v) return;
+    S.breathing = e.target.dataset.v==='1'; seg('seg-breath',S.breathing); refreshJSON(); };
+  const bpm=document.getElementById('bpm'), bpmval=document.getElementById('bpmval');
+  bpm.oninput = ()=>{ S.bpm=+bpm.value; bpmval.textContent=S.bpm.toFixed(1); refreshJSON(); };
+
+  // viewport auto-orbit toggle (stop/start the slow turning)
+  const viewbtn=document.getElementById('viewbtn'), viewlbl=document.getElementById('viewlbl');
+  viewbtn.onclick = ()=>{ controls.autoRotate = !controls.autoRotate;
+    viewbtn.classList.toggle('off', !controls.autoRotate);
+    viewlbl.textContent = 'auto-orbit · ' + (controls.autoRotate ? 'on' : 'off'); };
+
+  function fusedState(){ if(!S.present) return 'absent';
+    return S.moving ? 'present_moving' : 'present_still'; }
+  function refreshJSON(){
+    const breath = (S.present && !S.moving && S.breathing);
+    const j = document.getElementById('json');
+    const bpmStr = breath ? S.bpm.toFixed(1) : 'null';
+    const confStr = breath ? '4.5' : 'null';
+    j.innerHTML =
+      '<span class="k">state</span>           "'+fusedState()+'"\n'+
+      '<span class="k">breathing_bpm</span>   '+bpmStr+'\n'+
+      '<span class="k">breathing_conf</span>  '+confStr+'\n'+
+      '<span class="k">nodes</span>           2 · 3 (rx)';
+    // hero state banner (the big readout)
+    document.getElementById('state-title').textContent =
+      S.present ? (S.moving ? 'Present · Moving' : 'Present · Still') : 'Absent';
+    document.getElementById('state-sub').textContent =
+      breath ? (S.bpm.toFixed(1)+' bpm · breathing')
+      : S.present ? (S.moving ? 'motion detected' : 'still — no breath')
+      : 'room empty';
+  }
+  refreshJSON();
+
+  // ── 3D-anchored labels ─────────────────────────────────────
+  const labels = {
+    tx:{ el:document.getElementById('tag-tx'),  obj:nTX  },
+    rx2:{ el:document.getElementById('tag-rx2'),obj:nRX2 },
+    rx3:{ el:document.getElementById('tag-rx3'),obj:nRX3 },
+  };
+  const presenceTag = document.getElementById('tag-presence');
+  const _v = new THREE.Vector3();
+  function place(el, world, dy=0){ _v.copy(world); _v.y+=dy; _v.project(camera);
+    const x=(_v.x*0.5+0.5)*innerWidth, y=(-_v.y*0.5+0.5)*innerHeight;
+    el.style.transform=`translate(-50%,-50%) translate(${x}px,${y}px)`;
+    el.style.opacity = (_v.z<1)?1:0; }
+  function updateLabels(){
+    place(labels.tx.el,  P_TX,  0.34);
+    place(labels.rx2.el, P_RX2, 0.34);
+    place(labels.rx3.el, P_RX3, 0.34);
+    const show = S.baseScale>0.15 && S.present;
+    presenceTag.style.opacity = show?1:0;
+    if(show){ presenceTag.innerHTML = '<span class="dot"></span>PRESENCE';
+      place(presenceTag, new THREE.Vector3(0,GEM_Y,0), 0.55); }
+  }
+
+  // ── resize ─────────────────────────────────────────────────
+  addEventListener('resize', ()=>{
+    camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+    const d=renderer.getDrawingBufferSize(new THREE.Vector2());
+    normalRT.setSize(d.x,d.y); colorRT.setSize(d.x,d.y);
+    composite.uniforms.uTexel.value.set(1/d.x, 1/d.y);
+    composite.uniforms.uRes.value.set(d.x, d.y);
+  });
+
+  // ── frame loop ─────────────────────────────────────────────
+  const clock = new THREE.Clock(); let t=0;
+  function frame(){
+    requestAnimationFrame(frame);
+    const dt=Math.min(clock.getDelta(),0.05); t+=dt;
+
+    // breathing phase integrates so BPM changes stay smooth
+    if(S.present && !S.moving && S.breathing) S.phase += dt*(S.bpm/60)*Math.PI*2;
+    const breathScale = (S.present && !S.moving && S.breathing) ? (1+0.05*Math.sin(S.phase)) : 1;
+
+    links.forEach(L=> updateLink(L,t));
+    // presence gem: breathing scale + gentle float + slow spin (quicker when moving)
+    const sc = Math.max(0.0001, S.baseScale*breathScale);
+    gem.scale.set(0.9*sc, GEM_TALL*sc, 0.9*sc);
+    gem.position.y = GEM_Y + Math.sin(t*0.7)*0.03;
+    gem.rotation.y += dt*(0.22 + 0.7*S.motion);
+    gem.visible = S.baseScale>0.002;
+    const ap = 0.55 + 0.45*Math.sin(S.phase);
+    aura.visible = S.baseScale>0.01;
+    aura.scale.setScalar((0.85 + 0.22*ap) * (0.55 + 0.45*S.baseScale));
+    stoneShadow.material.opacity = 0.85*Math.min(1,S.baseScale);
+    stoneShadow.scale.setScalar(0.7+0.4*S.baseScale);
+    // nodes bob in place so the float reads
+    for(const nd of nodeObjs) nd.mesh.position.y = nd.baseY + Math.sin(t*0.9+nd.phase)*0.035;
+
+    // wind-swayed flora + mouse orbit (slow auto-rotate when idle)
+    for(const s of swayers) s.pivot.rotation.z = Math.sin(t*s.speed + s.phase)*s.amp;
+    controls.update();
+    composite.uniforms.uTime.value = t;
+
+    // pass 1 — view-space normals + depth (outlined objects only; sky off so silhouettes read)
+    scene.background=null; decoGroup.visible=false; scene.overrideMaterial=normalMat;
+    renderer.setClearColor(0x000000,1); renderer.setRenderTarget(normalRT); renderer.render(scene,camera);
+    scene.overrideMaterial=null; decoGroup.visible=true;
+
+    // pass 2 — toon color (everything, over the gradient sky)
+    scene.background=skyTex; renderer.setRenderTarget(colorRT); renderer.render(scene,camera);
+
+    // pass 3 — composite edges over color
+    renderer.setRenderTarget(null); renderer.render(quadScene, quadCam);
+    updateLabels();
+  }
+  frame();
+} catch(e){ fail(e); }
+</script>
+</body>
+</html>
