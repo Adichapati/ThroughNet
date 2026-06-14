@@ -44,7 +44,7 @@
   .tn-frame>i::after{ bottom:-1px; right:-1px; border-left:0; border-top:0; }
 
   /* click-fallback + hint */
-  .begin{ position:fixed; left:50%; top:63%; transform:translateX(-50%) rotate(-.5deg); z-index:7;
+  .begin{ position:fixed; left:50%; top:72%; transform:translateX(-50%) rotate(-.5deg); z-index:7;
     display:inline-flex; align-items:center; gap:12px; cursor:pointer; background:var(--ink); color:var(--paper-3);
     border:1px solid var(--ink); font-family:var(--f-mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; padding:13px 22px; box-shadow:var(--drop); }
   .begin .arr{ width:7px; height:7px; border-right:1.5px solid var(--paper-3); border-top:1.5px solid var(--paper-3); transform:rotate(45deg); }
@@ -184,9 +184,10 @@ try {
       if(ripX >= 0.0 && ripX <= 1.0){                       // cut only inside the seam zone; body stays opaque
         float ripY = vUv.y*0.5 + 0.5*uTearOffset;
         float w = dot(vec4(1.0), texture2D(uRip, vec2(ripX, ripY)))/4.0;
-        vec4 ripCol = texture2D(uRip, vec2(ripX*0.9, ripY-0.02));
-        if(!rightSide && w <= uWhiteThreshold){ if(dot(vec4(1.0),ripCol)/4.0 >= uWhiteThreshold) col=ripCol; else alpha=0.0; }
-        if(rightSide && w >= uWhiteThreshold) alpha=0.0;
+        // strictly complementary about the same boundary: each pixel is exactly one
+        // half (left keeps w>=threshold, right keeps w<threshold) — no gap, no overlap.
+        if(!rightSide && w < uWhiteThreshold) alpha = 0.0;
+        if(rightSide && w >= uWhiteThreshold) alpha = 0.0;
       }
       gl_FragColor = mix(vec4(col.rgb, alpha), vec4(uShadeColor, alpha), vAmount*uShadeAmount);
     }`;
