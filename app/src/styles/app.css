@@ -120,7 +120,7 @@ input[type=range]::-moz-range-thumb { width: 11px; height: 11px; background: var
   font-family: var(--f-mono); font-size: 9px; font-weight: 400; letter-spacing: .18em; text-transform: uppercase; padding: 9px 18px; }
 .tn-sheet .body { padding: 20px 22px 22px; }
 .tn-sheet .muted { font-size: 12px; color: var(--ink-soft); }
-.tn-trow { display: grid; grid-template-columns: 16px 1.1fr 1fr 1fr auto; gap: 12px; align-items: center;
+.tn-trow { display: grid; grid-template-columns: 16px 1.2fr 1fr 1fr 1fr auto; gap: 12px; align-items: center;
   padding: 12px 0; border-bottom: 1px solid var(--edge); font-size: 12px; }
 .tn-trow:last-child { border-bottom: 0; }
 .tn-trow .gem { width: 11px; height: 11px; transform: rotate(45deg); border: 1.5px solid var(--ink); background: var(--paper-3); }

@@ -25,6 +25,9 @@ export interface NodeStatus {
   breathingBpm: number | null;
   breathingConfidence: number | null;
   lastUpdateMs: number | null;
+  // link health, merged from /api/v1/nodes (node_states); null until available
+  rssiDbm: number | null;
+  csiFps: number | null;
 }
 
 export interface ThroughnetStatus {
@@ -55,6 +58,8 @@ export function parseStatus(j: any): ThroughnetStatus {
         breathingBpm: num(n.breathing_bpm),
         breathingConfidence: num(n.breathing_confidence),
         lastUpdateMs: num(n.last_update_ms),
+        rssiDbm: null,
+        csiFps: null,
       };
     });
   return {
@@ -85,6 +90,7 @@ export class TnClient {
     private readonly onUpdate: (status: ThroughnetStatus | null, conn: ConnState) => void,
     private readonly url = '/api/v1/throughnet/status',
     private readonly intervalMs = 1000,
+    private readonly nodesUrl = '/api/v1/nodes',
   ) {}
 
   start() { this.stopped = false; this.tick(); }
@@ -94,11 +100,30 @@ export class TnClient {
   private async tick() {
     try {
       const res = await fetch(this.url, { headers: { accept: 'application/json' } });
-      if (res.ok) this.onUpdate(parseStatus(await res.json()), 'live');
-      else this.onUpdate(null, 'offline');
+      if (res.ok) {
+        const status = parseStatus(await res.json());
+        await this.mergeNodeHealth(status);
+        this.onUpdate(status, 'live');
+      } else this.onUpdate(null, 'offline');
     } catch {
       this.onUpdate(null, 'offline');
     }
     if (!this.stopped) this.timer = setTimeout(() => this.tick(), this.intervalMs);
+  }
+
+  // best-effort: attach per-node RSSI + CSI packet rate from /api/v1/nodes
+  // (node_states). Optional — the verdict still renders if this 404s/fails.
+  private async mergeNodeHealth(status: ThroughnetStatus) {
+    try {
+      const r = await fetch(this.nodesUrl, { headers: { accept: 'application/json' } });
+      if (!r.ok) return;
+      const j: any = await r.json();
+      const byId = new Map<string, any>();
+      for (const n of (j?.nodes ?? [])) byId.set(String(n.node_id), n);
+      for (const node of status.nodes) {
+        const h = byId.get(node.id);
+        if (h) { node.rssiDbm = num(h.rssi_dbm); node.csiFps = num(h.csi_fps); }
+      }
+    } catch { /* node health is optional */ }
   }
 }

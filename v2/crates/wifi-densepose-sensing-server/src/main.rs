@@ -4982,11 +4982,16 @@ async fn nodes_endpoint(State(state): State<SharedState>) -> Json<serde_json::Va
             let stale = elapsed_ms > 5000;
             let status = if stale { "stale" } else { "active" };
             let rssi = ns.rssi_history.back().copied().unwrap_or(-90.0);
+            // per-node CSI frame rate (packet rate). Meaningful once the EMA has
+            // warmed up (>= 5 samples); null until then.
+            let csi_fps = if ns.csi_fps_samples >= 5 { Some(ns.csi_fps_ema) } else { None };
             serde_json::json!({
                 "node_id": id,
                 "status": status,
                 "last_seen_ms": elapsed_ms,
                 "rssi_dbm": rssi,
+                "csi_fps": csi_fps,
+                "csi_fps_samples": ns.csi_fps_samples,
                 "motion_level": &ns.current_motion_level,
                 "person_count": ns.prev_person_count,
             })

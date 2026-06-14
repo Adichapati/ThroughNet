@@ -168,7 +168,9 @@ export class TnApp extends LitElement {
         <h4>nodes${s ? ` · ${s.nodes.length}` : ''}</h4>
         ${(s?.nodes ?? []).slice(0, 4).map((n) => html`<div class="nd-row">
           <span class="gem ${n.present ? 'present' : ''} ${n.stale ? 'stale' : ''}"></span>
-          node ${n.id}<span class="st">${n.stale ? 'stale' : n.moving ? 'moving' : n.present ? 'still' : 'quiet'}</span>
+          node ${n.id}<span class="st">${n.rssiDbm != null
+            ? `${n.rssiDbm.toFixed(0)}dBm${n.csiFps != null ? ' · ' + n.csiFps.toFixed(0) + 'Hz' : ''}`
+            : (n.stale ? 'stale' : n.moving ? 'moving' : n.present ? 'still' : 'quiet')}</span>
         </div>`)}
         ${(!s || s.nodes.length === 0) ? html`<div class="nd-row" style="color:var(--ink-soft)">no nodes online</div>` : ''}
       </div>`;

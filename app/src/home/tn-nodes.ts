@@ -24,6 +24,7 @@ export class TnNodes extends LitElement {
     return html`<div class="tn-trow">
       <span class="gem ${n.present ? 'present' : ''}"></span>
       <div><div class="v">node ${n.id}</div><div class="k">${n.moving ? 'moving' : n.present ? 'still' : 'quiet'} · seen ${this.seen(n.lastUpdateMs)}</div></div>
+      <div><div class="k">link</div><div class="v">${n.rssiDbm != null ? n.rssiDbm.toFixed(0) + ' dBm' : '—'}${n.csiFps != null ? ' · ' + n.csiFps.toFixed(0) + ' Hz' : ''}</div></div>
       <div><div class="k">scores</div><div class="v">p ${n.presenceScore.toFixed(1)} · m ${n.motionScore.toFixed(1)}</div></div>
       <div><div class="k">breathing</div><div class="v">${n.breathingBpm != null ? n.breathingBpm.toFixed(1) + ' bpm' : '—'}</div></div>
       <div>${pill}</div>
