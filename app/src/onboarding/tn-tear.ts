@@ -161,7 +161,7 @@ export async function createTear(canvas: HTMLCanvasElement, opts: TearOpts = {})
   const py = (y: number) => -(y / window.innerHeight) * 2 + 1;
   const firstInteract = () => { if (!interacted) { interacted = true; opts.onFirstInteract?.(); } };
   const onDown = (y: number) => { if (removed) return; firstInteract(); down = true; startY = py(y); };
-  const onMove = (y: number) => { if (!down || removed) return; S.tearAmount = Math.min(Math.max(2 * (startY - py(y)), 0), 1.15); syncUniforms(); };
+  const onMove = (y: number) => { if (!down || removed) return; S.tearAmount = Math.max(2 * (startY - py(y)), 0); syncUniforms(); };
   const onUp = () => { if (!down || removed) return; down = false; if (S.tearAmount >= 0.55) complete(); else gsap.to(S, { tearAmount: 0, duration: 0.5, ease: 'power3.out', onUpdate: syncUniforms }); };
   const md = (e: MouseEvent) => onDown(e.clientY), mm = (e: MouseEvent) => onMove(e.clientY);
   const ts = (e: TouchEvent) => onDown(e.touches[0].clientY), tm = (e: TouchEvent) => onMove(e.touches[0].clientY);
@@ -171,7 +171,7 @@ export async function createTear(canvas: HTMLCanvasElement, opts: TearOpts = {})
   function complete() {
     if (removed) return; removed = true;
     const tl = gsap.timeline({ defaults: { duration: 1.0, ease: 'power2.in' }, onComplete: () => opts.onComplete?.() });
-    tl.to(S, { tearAmount: 1.15, ease: 'power2.out', onUpdate: syncUniforms }, 0);
+    tl.to(S, { tearAmount: 1.6 + Math.random() * 0.8, ease: 'power2.out', onUpdate: syncUniforms }, 0);
     tl.to(group.position, { z: 1 }, 0);
     sides.forEach((s) => {
       const sign = (S[s.id].ripSide - 0.5);
