@@ -5461,14 +5461,20 @@ async fn setup_fleet(
     let online = devices.iter().filter(|d| is_online(d)).count();
     let tx_online = devices.iter().filter(|d| is_online(d) && d["role"] == "tx").count();
     let rx_online = devices.iter().filter(|d| is_online(d) && d["role"] == "rx").count();
+    // A TX illuminator beacons but, in beacon-only mode (once RX peers join the
+    // mesh), reports no CSI of its own — so it will NOT show as "online". The
+    // honest health signal for the bistatic link is therefore: a TX is
+    // configured AND ≥1 RX is streaming. A radio-silent RX can only stream while
+    // capturing the TX beacon, so a live RX *implies* a live illuminator.
+    let tx_known = devices.iter().filter(|d| d["role"] == "tx").count();
     Json(serde_json::json!({
         "summary": {
             "known": state_files.len(),
             "online": online,
+            "tx_known": tx_known,
             "tx_online": tx_online,
             "rx_online": rx_online,
-            // The bistatic link needs at least its illuminator + one receiver.
-            "healthy": tx_online >= 1 && rx_online >= 1,
+            "healthy": tx_known >= 1 && rx_online >= 1,
             "scanned": q.scan,
         },
         "devices": devices,
