@@ -187,6 +187,60 @@ export async function fetchFleet(scan = false, base = '/api/v1/setup/fleet'): Pr
   };
 }
 
+// ── server ops (status / logs / restart / shutdown) ───────────────────────────
+
+export interface ServerStatus {
+  version: string;
+  source: string;
+  uptimeS: number;
+  clients: number;
+  nodesOnline: number;
+  pid: number;
+}
+
+export async function fetchServerStatus(url = '/api/v1/server/status'): Promise<ServerStatus> {
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`status ${res.status}`);
+  const j: any = await res.json();
+  return {
+    version: String(j?.version ?? '?'),
+    source: String(j?.source ?? '?'),
+    uptimeS: Number(j?.uptime_s ?? 0),
+    clients: Number(j?.clients ?? 0),
+    nodesOnline: Number(j?.nodes_online ?? 0),
+    pid: Number(j?.pid ?? 0),
+  };
+}
+
+export async function fetchServerLogs(since = 0, base = '/api/v1/server/logs'): Promise<{ next: number; lines: string[] }> {
+  const res = await fetch(`${base}?since=${since}`, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`logs ${res.status}`);
+  const j: any = await res.json();
+  return { next: Number(j?.next ?? since), lines: Array.isArray(j?.lines) ? j.lines.map(String) : [] };
+}
+
+async function postOp(url: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { accept: 'application/json' } });
+    const j: any = await res.json().catch(() => ({}));
+    return { ok: !!j?.ok };
+  } catch (e) { return { ok: false, error: String(e) }; }
+}
+export const restartServer = () => postOp('/api/v1/server/restart');
+export const shutdownServer = () => postOp('/api/v1/server/shutdown');
+
+export const MOCK_SERVER_STATUS: ServerStatus = {
+  version: '0.3.1', source: 'esp32', uptimeS: 4521, clients: 1, nodesOnline: 3, pid: 162569,
+};
+export const MOCK_LOGS: string[] = [
+  '2026-06-15T07:07:19.763Z  INFO sensing_server: WiFi-DensePose Sensing Server (Rust + Axum + RuVector)',
+  '2026-06-15T07:07:19.763Z  INFO sensing_server:   Source:    esp32',
+  '2026-06-15T07:07:19.764Z  INFO sensing_server: UDP CSI ingest bound 0.0.0.0:5005',
+  '2026-06-15T07:07:20.110Z  INFO sensing_server: node 1 (tx) first frame — illuminator up',
+  '2026-06-15T07:07:21.402Z  INFO sensing_server: node 3 (rx) streaming · 137 fps',
+  '2026-06-15T07:07:48.991Z  INFO sensing_server: empty-room baseline captured — scoring active',
+];
+
 export const MOCK_FLEET: FleetReport = {
   summary: { known: 3, online: 3, txOnline: 1, rxOnline: 2, healthy: true, scanned: true },
   devices: [

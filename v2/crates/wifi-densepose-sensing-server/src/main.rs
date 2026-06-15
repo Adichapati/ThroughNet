@@ -5475,12 +5475,124 @@ async fn setup_fleet(
     }))
 }
 
+// ── ADR-151 server ops: status / logs / restart / shutdown ───────────────────
+// The Server/Ops page's backend. Under `/api/v1/*` so they inherit the optional
+// bearer gate (RUVIEW_API_TOKEN) and the loopback-default bind — the same
+// posture as the flash/provision endpoints (which already write firmware).
+// restart/shutdown are deliberately powerful; keep the bind on 127.0.0.1 (or set
+// a token) when exposing beyond localhost.
+
+/// GET /api/v1/server/status — runtime status for the ops page.
+async fn server_status(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    let (source, uptime_s, clients, nodes_online) = {
+        let s = state.read().await;
+        let now = std::time::Instant::now();
+        let online = s
+            .node_states
+            .values()
+            .filter(|ns| {
+                ns.last_frame_time
+                    .map(|t| now.saturating_duration_since(t) <= ESP32_OFFLINE_TIMEOUT)
+                    .unwrap_or(false)
+            })
+            .count();
+        (
+            s.effective_source(),
+            s.start_time.elapsed().as_secs(),
+            s.tx.receiver_count(),
+            online,
+        )
+    };
+    Json(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "source": source,
+        "uptime_s": uptime_s,
+        "clients": clients,
+        "nodes_online": nodes_online,
+        "pid": std::process::id(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct LogsQuery {
+    /// Return only lines with index ≥ `since` (incremental polling). 0 = all retained.
+    #[serde(default)]
+    since: u64,
+}
+
+/// GET /api/v1/server/logs?since=N — recent server log lines + the next index.
+async fn server_logs(Query(q): Query<LogsQuery>) -> Json<serde_json::Value> {
+    let (next, lines) = LOG_STORE.get().map(|s| s.since(q.since)).unwrap_or((0, Vec::new()));
+    Json(serde_json::json!({ "next": next, "lines": lines }))
+}
+
+/// POST /api/v1/server/shutdown — clean process exit (a supervisor decides
+/// whether to restart). Responds first, then exits after a short flush delay.
+async fn server_shutdown() -> Json<serde_json::Value> {
+    tracing::warn!("shutdown requested via /api/v1/server/shutdown");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        std::process::exit(0);
+    });
+    Json(serde_json::json!({ "ok": true, "action": "shutdown" }))
+}
+
+/// POST /api/v1/server/restart — re-exec self with the same args (works
+/// standalone and under systemd; the client should poll status until it returns).
+async fn server_restart() -> Json<serde_json::Value> {
+    tracing::warn!("restart requested via /api/v1/server/restart");
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        restart_process();
+    });
+    Json(serde_json::json!({ "ok": true, "action": "restart" }))
+}
+
+/// Replace the running process image with a fresh copy of this binary + args.
+#[cfg(unix)]
+fn restart_process() -> ! {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sensing-server"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // exec() only returns on failure.
+    let err = std::process::Command::new(&exe).args(&args).exec();
+    tracing::error!("re-exec failed ({err}); exiting so a supervisor can restart");
+    std::process::exit(1);
+}
+#[cfg(not(unix))]
+fn restart_process() -> ! {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("sensing-server"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let _ = std::process::Command::new(&exe).args(&args).spawn();
+    std::process::exit(0);
+}
+
 #[cfg(test)]
 mod doctor_tests {
     use super::{
         classify_device_bucket, doctor_check, doctor_csi_check, parse_flash_id,
-        provision_state_path, sanitize_port, serial_port_shape_ok, valid_provision_role,
+        provision_state_path, sanitize_port, serial_port_shape_ok, valid_provision_role, LogStore,
     };
+
+    #[test]
+    fn log_store_rings_and_indexes() {
+        let s = LogStore::new(3);
+        s.ingest(b"one\ntwo\n");
+        let (next, lines) = s.since(0);
+        assert_eq!(lines, vec!["one", "two"]);
+        assert_eq!(next, 2);
+        // partial line is held until its newline arrives
+        s.ingest(b"thr");
+        assert_eq!(s.since(0).1, vec!["one", "two"]);
+        s.ingest(b"ee\nfour\n"); // now over cap(3): "one" drops
+        let (next, lines) = s.since(0);
+        assert_eq!(lines, vec!["two", "three", "four"]);
+        assert_eq!(next, 4);
+        // incremental: only lines past `since`
+        assert_eq!(s.since(3).1, vec!["four"]);
+        // a stale/low `since` clamps to the oldest retained line (no panic)
+        assert_eq!(s.since(0).1, vec!["two", "three", "four"]);
+    }
 
     #[test]
     fn provision_role_guard_accepts_only_tx_rx() {
@@ -7106,14 +7218,102 @@ fn coalesce_ui_path(initial: std::path::PathBuf) -> std::path::PathBuf {
     initial
 }
 
+// ── ADR-151 server ops: in-memory log ring buffer ────────────────────────────
+// Captures the server's own formatted tracing output (tee'd from the fmt writer,
+// also going to stdout) into a bounded ring, so the Server/Ops page can show a
+// live log with no log file. Each completed line gets a monotonic index for
+// incremental polling.
+struct LogRing {
+    lines: VecDeque<String>, // the last `cap` completed lines
+    start: u64,              // monotonic index of lines.front()
+    cap: usize,
+    partial: String,         // bytes seen since the last '\n'
+}
+
+#[derive(Clone)]
+struct LogStore {
+    inner: std::sync::Arc<std::sync::Mutex<LogRing>>,
+}
+
+static LOG_STORE: std::sync::OnceLock<LogStore> = std::sync::OnceLock::new();
+
+impl LogStore {
+    fn new(cap: usize) -> Self {
+        LogStore {
+            inner: std::sync::Arc::new(std::sync::Mutex::new(LogRing {
+                lines: VecDeque::new(),
+                start: 0,
+                cap,
+                partial: String::new(),
+            })),
+        }
+    }
+
+    /// Append raw writer bytes; split into lines and ring them, dropping oldest.
+    fn ingest(&self, bytes: &[u8]) {
+        let mut r = self.inner.lock().unwrap();
+        r.partial.push_str(&String::from_utf8_lossy(bytes));
+        while let Some(i) = r.partial.find('\n') {
+            let line: String = r.partial.drain(..=i).collect();
+            let line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+            if r.lines.len() >= r.cap {
+                r.lines.pop_front();
+                r.start += 1;
+            }
+            r.lines.push_back(line);
+        }
+    }
+
+    /// Lines with index ≥ `since`, plus the next index to request. Clamps a
+    /// stale/low `since` to the oldest retained line.
+    fn since(&self, since: u64) -> (u64, Vec<String>) {
+        let r = self.inner.lock().unwrap();
+        let next = r.start + r.lines.len() as u64;
+        let from = since.max(r.start);
+        let skip = from.saturating_sub(r.start) as usize;
+        let out = if skip >= r.lines.len() {
+            Vec::new()
+        } else {
+            r.lines.iter().skip(skip).cloned().collect()
+        };
+        (next, out)
+    }
+}
+
+/// Tees the fmt subscriber's output to stdout *and* the global `LOG_STORE`.
+struct LogWriter;
+impl std::io::Write for LogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = std::io::Write::write(&mut std::io::stdout(), buf)?;
+        if let Some(store) = LOG_STORE.get() {
+            store.ingest(&buf[..n]);
+        }
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::Write::flush(&mut std::io::stdout())
+    }
+}
+struct LogMakeWriter;
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogMakeWriter {
+    type Writer = LogWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        LogWriter
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
+    // Initialize tracing — tee formatted output into the ops log ring (ANSI off
+    // so captured lines are clean; stdout is uncolored too, fine under journald).
+    let _ = LOG_STORE.set(LogStore::new(800));
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "info,tower_http=debug".into()),
         )
+        .with_ansi(false)
+        .with_writer(LogMakeWriter)
         .init();
 
     let mut args = Args::parse();
@@ -8156,6 +8356,10 @@ async fn main() {
         .route("/api/v1/setup/scan", get(setup_scan))
         .route("/api/v1/setup/flash", post(setup_flash))
         .route("/api/v1/setup/provision", post(setup_provision))
+        .route("/api/v1/server/status", get(server_status))
+        .route("/api/v1/server/logs", get(server_logs))
+        .route("/api/v1/server/restart", post(server_restart))
+        .route("/api/v1/server/shutdown", post(server_shutdown))
         // ADR-044 §5.3: runtime-configurable dedup factor
         .route(
             "/api/v1/config/dedup-factor",
