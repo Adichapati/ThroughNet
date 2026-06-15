@@ -363,9 +363,10 @@ UI. See **Phase R** above. Current front:*
    streaming/provisioned/unprovisioned, `summary.healthy`, `?scan=true` for USB present-detection,
    credentials redacted), and **state-aware onboarding** (healthy fleet short-circuits to "already set up";
    the flash step skips a working board with a guarded "re-flash anyway"; a **TX guard** warns about the
-   mesh blackout). Next: a standalone **Devices console** (per-board flash/re-provision/update + auto
-   re-provision-after-flash so role/identity always survive a flash) and **OTA-over-network** updates for
-   deployed RX nodes, then a **Server/Ops** page (status, live log, restart, source toggle).
+   mesh blackout). The standalone **Devices console** (`tn-devices` tab) then landed: the full fleet from
+   the reconciler with per-board re-provision / re-flash and an explicit **role** dropdown (assign/replace
+   the TX illuminator on purpose) + `setup_provision --role`; OTA stubbed. Next: **OTA-over-network**
+   updates for deployed RX nodes, then a **Server/Ops** page (status, live log, restart, source toggle).
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
