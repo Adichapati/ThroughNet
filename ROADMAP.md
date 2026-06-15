@@ -355,6 +355,17 @@ UI. See **Phase R** above. Current front:*
    Remaining A4: build/publish the container image, and the optional espflash/Rust port to drop Python from
    the *setup* path (the runtime is already Python-free). Then docs rewrite (Phase 4.4).
    Replaces the CLI-first framing of Phase 3.
+   **Fleet management (foundation, 2026-06-15):** real-world use surfaced that onboarding was a one-shot,
+   stateless, single-board wizard — it always demanded re-flashing every board, had no way to flash an
+   illuminator separately, and let the user re-flash the TX (collapsing the mesh: every radio-silent RX is
+   locked to the TX, so its reboot dropped them all). Fix landed in two units: a server-side reconciler
+   **`GET /api/v1/setup/fleet`** (joins provision-state ∪ live `node_states`, role-aware buckets
+   streaming/provisioned/unprovisioned, `summary.healthy`, `?scan=true` for USB present-detection,
+   credentials redacted), and **state-aware onboarding** (healthy fleet short-circuits to "already set up";
+   the flash step skips a working board with a guarded "re-flash anyway"; a **TX guard** warns about the
+   mesh blackout). Next: a standalone **Devices console** (per-board flash/re-provision/update + auto
+   re-provision-after-flash so role/identity always survive a flash) and **OTA-over-network** updates for
+   deployed RX nodes, then a **Server/Ops** page (status, live log, restart, source toggle).
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
