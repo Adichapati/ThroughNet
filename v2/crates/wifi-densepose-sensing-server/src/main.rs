@@ -5310,6 +5310,26 @@ fn classify_device_bucket(provisioned: bool, online: bool) -> &'static str {
     }
 }
 
+/// Is this board contributing to a working link? A TX illuminator runs
+/// beacon-only once RX peers join the mesh, so it reports no CSI of its own and
+/// never shows `online`. A radio-silent RX, conversely, can only stream while
+/// it's capturing the TX beacon — so a live RX *implies* a live illuminator.
+/// We therefore treat a known TX as up whenever ≥1 RX is streaming.
+fn device_link_up(role: Option<&str>, online: bool, any_rx_online: bool) -> bool {
+    online || (role == Some("tx") && any_rx_online)
+}
+
+/// Role-aware bucket. Same as [`classify_device_bucket`] except a beacon-only TX
+/// inferred up via a live RX lands in `illuminating` rather than the
+/// "offline / needs attention" `provisioned` bucket — so the UI shows it as up.
+fn device_bucket(provisioned: bool, role: Option<&str>, online: bool, any_rx_online: bool) -> &'static str {
+    if role == Some("tx") && !online && any_rx_online {
+        "illuminating"
+    } else {
+        classify_device_bucket(provisioned, online)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct FleetQuery {
     /// When true, additionally probe USB ports (slow: ~seconds/port) so each
@@ -5380,6 +5400,19 @@ async fn setup_fleet(
     }
     state_files.sort_by(|a, b| a.0.cmp(&b.0));
 
+    // 3b. Is any RX streaming? A beacon-only TX reports no CSI of its own, so we
+    // infer it's up when ≥1 RX is live (see `device_link_up`). RX roles only
+    // live in state files, so this is fully determined here.
+    let any_rx_online = state_files.iter().any(|(_, v)| {
+        v.get("role").and_then(|x| x.as_str()) == Some("rx")
+            && v.get("node_id")
+                .and_then(|x| x.as_u64())
+                .and_then(|i| u8::try_from(i).ok())
+                .and_then(|id| live.get(&id))
+                .map(|l| l.online)
+                .unwrap_or(false)
+    });
+
     // 4. Join. One device per known state file; live status by node_id.
     let mut devices = Vec::new();
     let mut covered_ids: std::collections::HashSet<u8> = std::collections::HashSet::new();
@@ -5392,11 +5425,12 @@ async fn setup_fleet(
             .and_then(|i| u8::try_from(i).ok())
             .and_then(|id| live.get(&id));
         let online = ln.map(|l| l.online).unwrap_or(false);
+        let role = v.get("role").and_then(|x| x.as_str());
         let probe = probe_by_stem.get(stem).copied();
         // Never expose stored credentials — only whether one is on record.
         devices.push(serde_json::json!({
             "node_id": node_id,
-            "role": v.get("role").and_then(|x| x.as_str()),
+            "role": role,
             "ssid": v.get("ssid").and_then(|x| x.as_str()),
             "target_ip": v.get("target_ip").and_then(|x| x.as_str()),
             "filter_mac": v.get("filter_mac").and_then(|x| x.as_str()),
@@ -5409,10 +5443,11 @@ async fn setup_fleet(
             "flash_size": probe.and_then(|p| p.flash_size.clone()),
             "mac": probe.and_then(|p| p.mac.clone()),
             "online": online,
+            "link_up": device_link_up(role, online, any_rx_online),
             "rssi_dbm": ln.map(|l| l.rssi_dbm),
             "csi_fps": ln.and_then(|l| l.csi_fps),
             "last_seen_s": ln.and_then(|l| l.last_seen_s),
-            "bucket": classify_device_bucket(true, online),
+            "bucket": device_bucket(true, role, online, any_rx_online),
             "state_file": stem,
         }));
     }
@@ -5434,6 +5469,7 @@ async fn setup_fleet(
             "probe_ok": p.ok,
             "probe_error": p.error,
             "online": false,
+            "link_up": false,
             "bucket": "unprovisioned",
         }));
     }
@@ -5449,6 +5485,7 @@ async fn setup_fleet(
             "provisioned": false,
             "present": false,
             "online": l.online,
+            "link_up": l.online,
             "rssi_dbm": l.rssi_dbm,
             "csi_fps": l.csi_fps,
             "last_seen_s": l.last_seen_s,
@@ -5576,8 +5613,9 @@ fn restart_process() -> ! {
 #[cfg(test)]
 mod doctor_tests {
     use super::{
-        classify_device_bucket, doctor_check, doctor_csi_check, parse_flash_id,
-        provision_state_path, sanitize_port, serial_port_shape_ok, valid_provision_role, LogStore,
+        classify_device_bucket, device_bucket, device_link_up, doctor_check, doctor_csi_check,
+        parse_flash_id, provision_state_path, sanitize_port, serial_port_shape_ok,
+        valid_provision_role, LogStore,
     };
 
     #[test]
@@ -5669,6 +5707,26 @@ mod doctor_tests {
         assert_eq!(classify_device_bucket(true, false), "provisioned");
         // Only known via USB → needs first-time setup.
         assert_eq!(classify_device_bucket(false, false), "unprovisioned");
+    }
+
+    #[test]
+    fn beacon_only_tx_reads_up_when_an_rx_streams() {
+        // RX is literal truth: up iff it's sending frames.
+        assert!(device_link_up(Some("rx"), true, true));
+        assert!(!device_link_up(Some("rx"), false, true));
+        // A beacon-only TX sends no CSI of its own, but a streaming RX implies
+        // the illuminator is up — so a known TX reads up when any RX streams.
+        assert!(device_link_up(Some("tx"), false, true));
+        // No RX streaming → we genuinely can't confirm the TX → down.
+        assert!(!device_link_up(Some("tx"), false, false));
+        // A TX that does report frames is up regardless of the RX inference.
+        assert!(device_link_up(Some("tx"), true, false));
+        // Bucket: inferred-up TX is `illuminating`, not the offline `provisioned`.
+        assert_eq!(device_bucket(true, Some("tx"), false, true), "illuminating");
+        assert_eq!(device_bucket(true, Some("tx"), false, false), "provisioned");
+        // Non-TX and streaming devices fall through to the plain classifier.
+        assert_eq!(device_bucket(true, Some("rx"), false, true), "provisioned");
+        assert_eq!(device_bucket(true, Some("tx"), true, false), "streaming");
     }
 
     #[test]

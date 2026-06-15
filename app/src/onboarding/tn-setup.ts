@@ -119,7 +119,9 @@ export const MOCK_SCAN: ScanPort[] = [
 // setup_fleet — { summary: {known,online,tx_online,rx_online,healthy,scanned},
 //   devices: [{ node_id, role, bucket, present, online, port, chip, ... }] }.
 
-export type DeviceBucket = 'streaming' | 'provisioned' | 'unprovisioned';
+// 'illuminating' = a beacon-only TX inferred up because an RX is streaming
+// (a TX sends no CSI of its own once RX peers join, so it never reads `online`).
+export type DeviceBucket = 'streaming' | 'illuminating' | 'provisioned' | 'unprovisioned';
 
 export interface FleetDevice {
   nodeId: number | null;
@@ -127,7 +129,8 @@ export interface FleetDevice {
   bucket: DeviceBucket;
   provisioned: boolean;
   present: boolean;          // plugged into this machine right now (needs ?scan)
-  online: boolean;           // streaming fresh CSI frames
+  online: boolean;           // streaming fresh CSI frames (literal)
+  linkUp: boolean;           // contributing to a working link (TX up when an RX streams)
   port: string | null;
   chip: string | null;
   flashSize: string | null;
@@ -151,7 +154,7 @@ export interface FleetReport {
   devices: FleetDevice[];
 }
 
-const BUCKETS: DeviceBucket[] = ['streaming', 'provisioned', 'unprovisioned'];
+const BUCKETS: DeviceBucket[] = ['streaming', 'illuminating', 'provisioned', 'unprovisioned'];
 
 export async function fetchFleet(scan = false, base = '/api/v1/setup/fleet'): Promise<FleetReport> {
   const url = scan ? `${base}?scan=true` : base;
@@ -166,6 +169,7 @@ export async function fetchFleet(scan = false, base = '/api/v1/setup/fleet'): Pr
     provisioned: !!d?.provisioned,
     present: !!d?.present,
     online: !!d?.online,
+    linkUp: d?.link_up != null ? !!d.link_up : !!d?.online,
     port: d?.port ?? null,
     chip: d?.chip ?? null,
     flashSize: d?.flash_size ?? null,
@@ -242,13 +246,15 @@ export const MOCK_LOGS: string[] = [
 ];
 
 export const MOCK_FLEET: FleetReport = {
-  summary: { known: 3, online: 3, txOnline: 1, rxOnline: 2, healthy: true, scanned: true },
+  // Realistic bistatic mesh: the TX beacons (sends no CSI of its own → online
+  // false) but reads up via the streaming RX nodes; healthy = TX known + RX live.
+  summary: { known: 3, online: 2, txOnline: 0, rxOnline: 2, healthy: true, scanned: true },
   devices: [
-    { nodeId: 1, role: 'tx', bucket: 'streaming', provisioned: true, present: false, online: true,
-      port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: -48, csiFps: 132, lastSeenS: 0 },
-    { nodeId: 2, role: 'rx', bucket: 'streaming', provisioned: true, present: false, online: true,
+    { nodeId: 1, role: 'tx', bucket: 'illuminating', provisioned: true, present: false, online: false, linkUp: true,
+      port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: null, csiFps: null, lastSeenS: null },
+    { nodeId: 2, role: 'rx', bucket: 'streaming', provisioned: true, present: false, online: true, linkUp: true,
       port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: -55, csiFps: 130, lastSeenS: 1 },
-    { nodeId: 3, role: 'rx', bucket: 'streaming', provisioned: true, present: true, online: true,
+    { nodeId: 3, role: 'rx', bucket: 'streaming', provisioned: true, present: true, online: true, linkUp: true,
       port: '/dev/ttyACM0', chip: 'ESP32-S3', flashSize: '16MB', ssid: 'KANAYAM', rssiDbm: -52, csiFps: 137, lastSeenS: 0 },
   ],
 };

@@ -119,14 +119,16 @@ export class TnDevices extends LitElement {
     const tx = d.role === 'tx';
     const open = this.open === this.keyOf(d);
     const pill = d.bucket === 'streaming' ? html`<span class="tn-pill ok">streaming</span>`
+      : d.bucket === 'illuminating' ? html`<span class="tn-pill ok">beaconing</span>`
       : d.bucket === 'provisioned' ? html`<span class="tn-pill warn">offline</span>`
       : html`<span class="tn-pill bad">needs setup</span>`;
     const link = d.online && d.rssiDbm != null
       ? `${d.rssiDbm.toFixed(0)} dBm${d.csiFps != null ? ' · ' + d.csiFps.toFixed(0) + ' Hz' : ''}`
+      : d.linkUp ? 'beaconing'
       : d.present ? `on ${d.port}` : 'offline';
     return html`
       <div class="dv-row ${open ? 'open' : ''}" @click=${() => this.toggle(d)}>
-        <span class="gem ${tx ? 'tx' : 'rx'} ${d.online ? 'present' : ''}"></span>
+        <span class="gem ${tx ? 'tx' : 'rx'} ${d.linkUp ? 'present' : ''}"></span>
         <div>
           <div class="v">${d.nodeId != null ? `node ${d.nodeId}` : 'new board'}</div>
           <div class="k">${d.role ?? 'unprovisioned'}${tx ? ' · illuminator' : ''}${d.present ? ' · USB' : ''}</div>
@@ -145,7 +147,8 @@ export class TnDevices extends LitElement {
     return html`<div class="dv-actions" @click=${(e: Event) => e.stopPropagation()}>
       ${!present ? html`
         <p class="muted">
-          ${d.online ? 'online and streaming — nothing to do. ' : ''}plug this board into USB and hit
+          ${d.online ? 'online and streaming — nothing to do. '
+            : d.linkUp ? 'this illuminator is up — beaconing. nothing to do. ' : ''}plug this board into USB and hit
           <b>scan USB</b> above to flash or re-provision it.
         </p>` : html`
         ${tx ? html`<div class="dv-warn">⚠ this is your TX illuminator — re-flashing reboots the beacon and every receiver goes dark for ~20&nbsp;s while it returns. Re-provisioning is safe.</div>` : ''}

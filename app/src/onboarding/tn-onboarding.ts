@@ -188,12 +188,15 @@ export class TnOnboarding extends LitElement {
 
   private renderFleetRow(d: FleetDevice) {
     const tx = d.role === 'tx';
-    const status = d.online ? `${Math.round(d.csiFps ?? 0)} fps` : 'offline';
+    // A beacon-only TX sends no CSI of its own, so show "beaconing" when it's up
+    // (linkUp) rather than a misleading "offline".
+    const status = d.online ? `${Math.round(d.csiFps ?? 0)} fps`
+      : d.linkUp ? 'beaconing' : 'offline';
     return html`<div class="nd">
       <span class="gem ${tx ? 'tx' : 'rx'}"></span> node ${d.nodeId ?? '?'}
       <span class="role">${d.role ?? 'rx'}${tx ? ' · illuminator' : ''}</span>
       <span class="spacer"></span>
-      <code class="cmd ${d.online ? '' : 'off'}">${status}</code>
+      <code class="cmd ${d.linkUp ? '' : 'off'}">${status}</code>
     </div>`;
   }
 
@@ -329,7 +332,7 @@ export class TnOnboarding extends LitElement {
             <h3>${heading}</h3>
             <div class="check ok" style="margin:2px 0 10px"><span class="mk">✓</span><div>
               <div class="lbl">already set up — node ${dev!.nodeId ?? '?'} · ${dev!.role ?? 'rx'}${isTx ? ' · illuminator' : ''}</div>
-              <div class="sub">${dev!.online ? 'streaming now' : 'provisioned'} on ${dev!.ssid ?? 'your network'} — no flash needed.</div></div></div>
+              <div class="sub">${dev!.online ? 'streaming now' : dev!.linkUp ? 'up — beaconing' : 'provisioned'} on ${dev!.ssid ?? 'your network'} — no flash needed.</div></div></div>
             <div style="margin-bottom:12px">${status}</div>
             ${txWarn}
             <div class="actions">
