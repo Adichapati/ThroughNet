@@ -10,11 +10,12 @@ import type { TnEvent } from './home/tn-events';
 import './live/tn-live-view';
 import './onboarding/tn-onboarding';
 import './home/tn-nodes';
+import './home/tn-devices';
 import './home/tn-events';
 import './home/tn-settings';
 
 const EMPTY: SensingState = { present: false, moving: false, breathing: false, bpm: 15 };
-type Tab = 'home' | 'nodes' | 'events' | 'settings';
+type Tab = 'home' | 'nodes' | 'devices' | 'events' | 'settings';
 
 // decorative breathing trace (a few cycles), reused each render
 const WAVE = 'M0,13 ' + Array.from({ length: 40 }, (_, i) =>
@@ -96,6 +97,7 @@ export class TnApp extends LitElement {
           <div class="tn-banner tn-banner--sm">ThroughNet</div>
           <nav class="tn-nav">
             ${this.navBtn('home', 'live')}${this.navBtn('nodes', 'nodes')}
+            ${this.navBtn('devices', 'devices')}
             ${this.navBtn('events', 'events')}${this.navBtn('settings', 'settings')}
           </nav>
         </div>
@@ -112,6 +114,7 @@ export class TnApp extends LitElement {
         ? (this.mode === 'mock' ? this.renderPanel(fusedState(this.st)) : this.renderCards())
         : ''}
       ${this.tab === 'nodes' ? html`<tn-nodes .nodes=${this.status?.nodes ?? []} .conn=${this.conn}></tn-nodes>` : ''}
+      ${this.tab === 'devices' ? html`<tn-devices></tn-devices>` : ''}
       ${this.tab === 'events' ? html`<tn-events .events=${this.events}></tn-events>` : ''}
       ${this.tab === 'settings'
         ? html`<tn-settings .status=${this.status} @setup=${() => { this.view = 'onboarding'; }}></tn-settings>` : ''}

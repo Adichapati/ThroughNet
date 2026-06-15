@@ -160,3 +160,42 @@ input[type=range]::-moz-range-thumb { width: 11px; height: 11px; background: var
 .err { position: fixed; inset: 0; display: none; place-items: center; padding: 40px; text-align: center;
   font-family: var(--f-mono); font-size: 13px; color: var(--ink); background: var(--paper); z-index: 9; }
 .err.show { display: grid; }
+
+/* ── devices console (tn-devices) ──────────────────────────── */
+tn-devices .dv-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+tn-devices .dv-btn { font-family: var(--f-mono); font-size: 11px; letter-spacing: .04em; cursor: pointer;
+  background: var(--paper-3); color: var(--ink); border: 1px solid var(--ink); padding: 6px 12px; }
+tn-devices .dv-btn:hover:not(:disabled) { background: var(--ink); color: var(--paper-3); }
+tn-devices .dv-btn:disabled { opacity: .42; cursor: default; }
+tn-devices .dv-btn.ghost { border-color: var(--edge); color: var(--ink-soft); background: transparent; }
+tn-devices .dv-btn.danger { border-color: var(--clay); color: var(--clay); }
+tn-devices .dv-btn.danger:hover:not(:disabled) { background: var(--clay); color: var(--paper-3); }
+
+tn-devices .dv-row { display: grid; grid-template-columns: 16px 1.5fr 1.1fr auto 18px; gap: 12px;
+  align-items: center; padding: 12px 4px; border-bottom: 1px solid var(--line); cursor: pointer; }
+tn-devices .dv-row:hover { background: var(--paper-2); }
+tn-devices .dv-row.open { background: var(--paper-2); }
+tn-devices .dv-row .gem { width: 11px; height: 11px; transform: rotate(45deg); border: 1.5px solid var(--ink);
+  background: var(--paper-3); flex: none; }
+tn-devices .dv-row .gem.tx { background: var(--sand); }
+tn-devices .dv-row .gem.rx { background: var(--slate); }
+tn-devices .dv-row .gem.present { box-shadow: 0 0 0 3px color-mix(in srgb, var(--sage) 55%, transparent); }
+tn-devices .dv-row .k { font-family: var(--f-mono); font-size: 9px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--ink-soft); }
+tn-devices .dv-row .v { font-family: var(--f-mono); font-size: 11px; }
+tn-devices .dv-caret { font-family: var(--f-mono); font-size: 10px; color: var(--ink-soft); text-align: center; }
+
+tn-devices .dv-actions { padding: 14px 8px 18px; background: var(--paper-2); border-bottom: 1px solid var(--line); }
+tn-devices .dv-warn { font-size: 12px; color: var(--ink); background: color-mix(in srgb, var(--sand) 45%, var(--paper-3));
+  border: 1px solid var(--sand); padding: 9px 11px; margin-bottom: 12px; }
+tn-devices .dv-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px; margin-bottom: 12px; }
+tn-devices .dv-form label { display: flex; flex-direction: column; gap: 4px; font-family: var(--f-mono);
+  font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+tn-devices .dv-form input, tn-devices .dv-form select { font-family: var(--f-mono); font-size: 12px;
+  text-transform: none; letter-spacing: 0; color: var(--ink); background: var(--paper-3);
+  border: 1px solid var(--edge); padding: 6px 8px; }
+tn-devices .dv-btns { display: flex; align-items: center; gap: 9px; }
+tn-devices .dv-msg { margin-top: 11px; font-family: var(--f-mono); font-size: 11px; padding: 7px 10px;
+  border: 1px solid var(--edge); }
+tn-devices .dv-msg.ok { border-color: var(--sage); background: color-mix(in srgb, var(--sage) 28%, var(--paper-3)); }
+tn-devices .dv-msg.bad { border-color: var(--clay); background: color-mix(in srgb, var(--clay) 22%, var(--paper-3)); color: var(--ink); }

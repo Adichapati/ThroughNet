@@ -5197,19 +5197,39 @@ struct ProvisionReq {
     password: Option<String>,
     #[serde(default)]
     target_ip: Option<String>,
+    /// Explicit role — `tx` (illuminator) or `rx`. Lets the Devices console
+    /// assign/replace the illuminator on purpose (the "flash an illuminator
+    /// separately" flow). Omitted → `--auto` derives it (first board = TX).
+    #[serde(default)]
+    role: Option<String>,
+}
+
+/// The provision roles the setup endpoint forwards to `provision.py --role`.
+/// `legacy` is intentionally excluded — the in-app fleet is strictly TX/RX.
+fn valid_provision_role(role: &str) -> bool {
+    matches!(role, "tx" | "rx")
 }
 
 /// POST /api/v1/setup/provision — `provision.py --auto` (fleet auto-id: first
 /// board = TX illuminator, later boards = RX locked to the TX MAC). Omitted
 /// ssid/password merge from the board's prior per-port state (re-provisioning a
 /// known board needs no creds); target_ip defaults to the host LAN IP (mDNS is
-/// primary). Reports the final role/node_id read back from the state file.
+/// primary); an explicit `role` overrides the auto assignment. Reports the
+/// final role/node_id read back from the state file.
 async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<serde_json::Value>) {
     if !valid_serial_port(&req.port) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "success": false, "error": format!("not a serial device: {}", req.port) })),
         );
+    }
+    if let Some(r) = req.role.as_deref().filter(|s| !s.is_empty()) {
+        if !valid_provision_role(r) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "success": false, "error": format!("invalid role: {r} (want tx or rx)") })),
+            );
+        }
     }
     let paths = setup_paths();
     let mut cmd = tokio::process::Command::new(&paths.python);
@@ -5219,6 +5239,10 @@ async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<ser
     }
     if let Some(p) = req.password.as_deref().filter(|s| !s.is_empty()) {
         cmd.args(["--password", p]);
+    }
+    // Explicit role wins over --auto's first-board-is-TX rule (validated above).
+    if let Some(r) = req.role.as_deref().filter(|s| !s.is_empty()) {
+        cmd.args(["--role", r]);
     }
     // target_ip is the mDNS *fallback* (R1 is primary). Respect a board's stored
     // value: only set it from a request value, or auto-detect for a *new* board
@@ -5455,8 +5479,19 @@ async fn setup_fleet(
 mod doctor_tests {
     use super::{
         classify_device_bucket, doctor_check, doctor_csi_check, parse_flash_id,
-        provision_state_path, sanitize_port, serial_port_shape_ok,
+        provision_state_path, sanitize_port, serial_port_shape_ok, valid_provision_role,
     };
+
+    #[test]
+    fn provision_role_guard_accepts_only_tx_rx() {
+        assert!(valid_provision_role("tx"));
+        assert!(valid_provision_role("rx"));
+        // legacy is upstream-only; the in-app fleet is strictly TX/RX.
+        assert!(!valid_provision_role("legacy"));
+        assert!(!valid_provision_role("TX"));
+        assert!(!valid_provision_role("illuminator"));
+        assert!(!valid_provision_role(""));
+    }
 
     #[test]
     fn flash_id_parse_pulls_chip_size_mac() {

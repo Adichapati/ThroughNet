@@ -89,13 +89,20 @@ export interface ProvisionResult {
 }
 
 export async function provisionBoard(
-  req: { port: string; ssid?: string; password?: string },
+  req: { port: string; ssid?: string; password?: string; targetIp?: string; role?: string },
   url = '/api/v1/setup/provision',
 ): Promise<ProvisionResult> {
+  // snake_case the wire fields the server expects (target_ip); role is forwarded
+  // verbatim ('tx' | 'rx') so the Devices console can assign the illuminator.
+  const body: Record<string, string> = { port: req.port };
+  if (req.ssid) body.ssid = req.ssid;
+  if (req.password) body.password = req.password;
+  if (req.targetIp) body.target_ip = req.targetIp;
+  if (req.role) body.role = req.role;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
   });
   const j: any = await res.json().catch(() => ({}));
   return { success: !!j?.success, role: j?.role ?? null, nodeId: j?.node_id ?? null, error: j?.error };
