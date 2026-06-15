@@ -5011,30 +5011,61 @@ fn detect_lan_ip() -> Option<String> {
     sock.local_addr().ok().map(|a| a.ip().to_string())
 }
 
-/// Where `provision.py` stores per-port state — mirror of its `_state_path_for`
-/// (`$XDG_CONFIG_HOME|~/.config / wifi-densepose / esp32-provision-state /
-/// <sanitized-port>.json`), so the endpoint can read back the final role/node.
-fn provision_state_path(port: &str) -> Option<PathBuf> {
+/// Sanitize a serial port for filesystem use — mirrors `provision.py`'s
+/// `_state_path_for` (every non-alphanumeric byte → `_`), so a scanned port can
+/// be matched against its on-disk state-file stem.
+fn sanitize_port(port: &str) -> String {
+    port.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// Directory holding the per-port provision-state JSON files (mirror of
+/// `provision.py`'s `_default_state_dir`): `$XDG_CONFIG_HOME|~/.config /
+/// wifi-densepose / esp32-provision-state`.
+fn provision_state_dir() -> Option<PathBuf> {
     let base = std::env::var("XDG_CONFIG_HOME")
         .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
-    let sanitized: String = port
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    Some(
-        base.join("wifi-densepose")
-            .join("esp32-provision-state")
-            .join(format!("{sanitized}.json")),
-    )
+    Some(base.join("wifi-densepose").join("esp32-provision-state"))
 }
 
-/// GET /api/v1/setup/scan — list USB serial ports and probe each for chip/flash.
-async fn setup_scan() -> Json<serde_json::Value> {
+/// Where `provision.py` stores per-port state — `<state-dir>/<sanitized-port>.json`,
+/// so the endpoint can read back the final role/node.
+fn provision_state_path(port: &str) -> Option<PathBuf> {
+    Some(provision_state_dir()?.join(format!("{}.json", sanitize_port(port))))
+}
+
+/// A single USB serial port probed with `esptool flash_id`.
+struct PortProbe {
+    path: String,
+    chip: Option<String>,
+    flash_size: Option<String>,
+    mac: Option<String>,
+    ok: bool,
+    error: Option<String>,
+}
+
+impl PortProbe {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "path": self.path,
+            "chip": self.chip,
+            "flash_size": self.flash_size,
+            "mac": self.mac,
+            "ok": self.ok,
+            "error": self.error.clone().map(serde_json::Value::from).unwrap_or(serde_json::Value::Null),
+        })
+    }
+}
+
+/// Probe every USB serial port for chip/flash/MAC. Shared by `/setup/scan`
+/// (the raw list) and `/setup/fleet` (the reconciler's "present" detection).
+async fn probe_serial_ports() -> Vec<PortProbe> {
     let paths = setup_paths();
-    let mut ports = Vec::new();
+    let mut out = Vec::new();
     for path in list_serial_ports() {
         let probe = tokio::time::timeout(
             std::time::Duration::from_secs(25),
@@ -5043,33 +5074,52 @@ async fn setup_scan() -> Json<serde_json::Value> {
                 .output(),
         )
         .await;
-        match probe {
+        out.push(match probe {
             Ok(Ok(o)) => {
                 let combined = format!(
                     "{}{}",
                     String::from_utf8_lossy(&o.stdout),
                     String::from_utf8_lossy(&o.stderr)
                 );
-                let (chip, size, mac) = parse_flash_id(&combined);
+                let (chip, flash_size, mac) = parse_flash_id(&combined);
                 let ok = chip.is_some();
-                ports.push(serde_json::json!({
-                    "path": path,
-                    "chip": chip,
-                    "flash_size": size,
-                    "mac": mac,
-                    "ok": ok,
-                    "error": if ok { serde_json::Value::Null }
-                             else { serde_json::json!("couldn't identify chip — board busy or not responding?") },
-                }));
+                PortProbe {
+                    path,
+                    chip,
+                    flash_size,
+                    mac,
+                    ok,
+                    error: if ok {
+                        None
+                    } else {
+                        Some("couldn't identify chip — board busy or not responding?".into())
+                    },
+                }
             }
-            Ok(Err(e)) => ports.push(serde_json::json!({
-                "path": path, "ok": false, "error": format!("esptool failed to launch: {e}")
-            })),
-            Err(_) => ports.push(serde_json::json!({
-                "path": path, "ok": false, "error": "chip probe timed out (25 s)"
-            })),
-        }
+            Ok(Err(e)) => PortProbe {
+                path,
+                chip: None,
+                flash_size: None,
+                mac: None,
+                ok: false,
+                error: Some(format!("esptool failed to launch: {e}")),
+            },
+            Err(_) => PortProbe {
+                path,
+                chip: None,
+                flash_size: None,
+                mac: None,
+                ok: false,
+                error: Some("chip probe timed out (25 s)".into()),
+            },
+        });
     }
+    out
+}
+
+/// GET /api/v1/setup/scan — list USB serial ports and probe each for chip/flash.
+async fn setup_scan() -> Json<serde_json::Value> {
+    let ports: Vec<_> = probe_serial_ports().await.iter().map(PortProbe::to_json).collect();
     Json(serde_json::json!({ "ports": ports }))
 }
 
@@ -5220,10 +5270,192 @@ async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<ser
     }
 }
 
+/// Reconciler bucket for one board, from (do we have provision state for it?,
+/// is it streaming fresh frames right now?). This is the single source of truth
+/// the UI uses to stop telling users to re-flash boards that already work.
+///
+/// * `streaming`     — fresh CSI frames observed → it's flashed, provisioned, working.
+/// * `provisioned`   — we have its state file but it isn't streaming (offline /
+///                     placement / TX rebooting) → needs attention, NOT a re-flash.
+/// * `unprovisioned` — known only because it's plugged in now → needs flash + provision.
+fn classify_device_bucket(provisioned: bool, online: bool) -> &'static str {
+    match (provisioned, online) {
+        (_, true) => "streaming",
+        (true, false) => "provisioned",
+        (false, false) => "unprovisioned",
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct FleetQuery {
+    /// When true, additionally probe USB ports (slow: ~seconds/port) so each
+    /// device gets a `present` flag and brand-new boards surface. Default false
+    /// (fast: provision-state ∪ live node_states only).
+    #[serde(default)]
+    scan: bool,
+}
+
+/// Live per-node status snapshot, copied out from `node_states` under the lock
+/// so no subprocess is awaited while holding it.
+struct LiveNode {
+    online: bool,
+    rssi_dbm: f64,
+    csi_fps: Option<f64>,
+    last_seen_s: Option<u64>,
+}
+
+/// GET /api/v1/setup/fleet — the fleet reconciler. Joins the per-port provision
+/// state files (what we've configured) with live `node_states` (what's actually
+/// streaming) into one role-aware view, so onboarding can skip healthy boards
+/// and the Devices page can drive per-board ops. `?scan=true` also probes USB.
+async fn setup_fleet(
+    State(state): State<SharedState>,
+    Query(q): Query<FleetQuery>,
+) -> Json<serde_json::Value> {
+    // 1. Live snapshot — take it, release the lock before any subprocess (scan).
+    let live: HashMap<u8, LiveNode> = {
+        let s = state.read().await;
+        let now = std::time::Instant::now();
+        s.node_states
+            .iter()
+            .map(|(&id, ns)| {
+                let last_seen = ns.last_frame_time.map(|t| now.saturating_duration_since(t));
+                (
+                    id,
+                    LiveNode {
+                        online: last_seen.map(|d| d <= ESP32_OFFLINE_TIMEOUT).unwrap_or(false),
+                        rssi_dbm: ns.rssi_history.back().copied().unwrap_or(-90.0),
+                        csi_fps: if ns.csi_fps_samples >= 5 { Some(ns.csi_fps_ema) } else { None },
+                        last_seen_s: last_seen.map(|d| d.as_secs()),
+                    },
+                )
+            })
+            .collect()
+    };
+
+    // 2. Optional USB probe → map sanitized-stem → probe, for present detection.
+    let probes = if q.scan { probe_serial_ports().await } else { Vec::new() };
+    let probe_by_stem: HashMap<String, &PortProbe> =
+        probes.iter().map(|p| (sanitize_port(&p.path), p)).collect();
+
+    // 3. Read every per-port provision-state file.
+    let mut state_files: Vec<(String, serde_json::Value)> = Vec::new();
+    if let Some(dir) = provision_state_dir() {
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let fname = e.file_name().to_string_lossy().into_owned();
+                if let Some(stem) = fname.strip_suffix(".json") {
+                    if let Ok(txt) = std::fs::read_to_string(e.path()) {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                            state_files.push((stem.to_string(), v));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    state_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // 4. Join. One device per known state file; live status by node_id.
+    let mut devices = Vec::new();
+    let mut covered_ids: std::collections::HashSet<u8> = std::collections::HashSet::new();
+    for (stem, v) in &state_files {
+        let node_id = v.get("node_id").and_then(|x| x.as_u64());
+        if let Some(id) = node_id.and_then(|i| u8::try_from(i).ok()) {
+            covered_ids.insert(id);
+        }
+        let ln = node_id
+            .and_then(|i| u8::try_from(i).ok())
+            .and_then(|id| live.get(&id));
+        let online = ln.map(|l| l.online).unwrap_or(false);
+        let probe = probe_by_stem.get(stem).copied();
+        // Never expose stored credentials — only whether one is on record.
+        devices.push(serde_json::json!({
+            "node_id": node_id,
+            "role": v.get("role").and_then(|x| x.as_str()),
+            "ssid": v.get("ssid").and_then(|x| x.as_str()),
+            "target_ip": v.get("target_ip").and_then(|x| x.as_str()),
+            "filter_mac": v.get("filter_mac").and_then(|x| x.as_str()),
+            "wifi_mac": v.get("wifi_mac").and_then(|x| x.as_str()),
+            "has_password": v.get("password").map(|p| !p.is_null()).unwrap_or(false),
+            "provisioned": true,
+            "present": probe.is_some(),
+            "port": probe.map(|p| p.path.clone()),
+            "chip": probe.and_then(|p| p.chip.clone()),
+            "flash_size": probe.and_then(|p| p.flash_size.clone()),
+            "mac": probe.and_then(|p| p.mac.clone()),
+            "online": online,
+            "rssi_dbm": ln.map(|l| l.rssi_dbm),
+            "csi_fps": ln.and_then(|l| l.csi_fps),
+            "last_seen_s": ln.and_then(|l| l.last_seen_s),
+            "bucket": classify_device_bucket(true, online),
+            "state_file": stem,
+        }));
+    }
+
+    // 4b. Plugged-in boards with no state file → unprovisioned, need setup.
+    for p in &probes {
+        if state_files.iter().any(|(stem, _)| stem == &sanitize_port(&p.path)) {
+            continue;
+        }
+        devices.push(serde_json::json!({
+            "node_id": serde_json::Value::Null,
+            "role": serde_json::Value::Null,
+            "provisioned": false,
+            "present": true,
+            "port": p.path,
+            "chip": p.chip,
+            "flash_size": p.flash_size,
+            "mac": p.mac,
+            "probe_ok": p.ok,
+            "probe_error": p.error,
+            "online": false,
+            "bucket": "unprovisioned",
+        }));
+    }
+
+    // 4c. Streaming nodes we have no state file for (provisioned elsewhere).
+    for (&id, l) in &live {
+        if covered_ids.contains(&id) {
+            continue;
+        }
+        devices.push(serde_json::json!({
+            "node_id": id,
+            "role": serde_json::Value::Null,
+            "provisioned": false,
+            "present": false,
+            "online": l.online,
+            "rssi_dbm": l.rssi_dbm,
+            "csi_fps": l.csi_fps,
+            "last_seen_s": l.last_seen_s,
+            "bucket": classify_device_bucket(false, l.online),
+        }));
+    }
+
+    // 5. Summary — drives onboarding's "already healthy, skip setup" decision.
+    let is_online = |d: &serde_json::Value| d["online"].as_bool().unwrap_or(false);
+    let online = devices.iter().filter(|d| is_online(d)).count();
+    let tx_online = devices.iter().filter(|d| is_online(d) && d["role"] == "tx").count();
+    let rx_online = devices.iter().filter(|d| is_online(d) && d["role"] == "rx").count();
+    Json(serde_json::json!({
+        "summary": {
+            "known": state_files.len(),
+            "online": online,
+            "tx_online": tx_online,
+            "rx_online": rx_online,
+            // The bistatic link needs at least its illuminator + one receiver.
+            "healthy": tx_online >= 1 && rx_online >= 1,
+            "scanned": q.scan,
+        },
+        "devices": devices,
+    }))
+}
+
 #[cfg(test)]
 mod doctor_tests {
     use super::{
-        doctor_check, doctor_csi_check, parse_flash_id, provision_state_path, serial_port_shape_ok,
+        classify_device_bucket, doctor_check, doctor_csi_check, parse_flash_id,
+        provision_state_path, sanitize_port, serial_port_shape_ok,
     };
 
     #[test]
@@ -5259,6 +5491,31 @@ mod doctor_tests {
         let p = provision_state_path("/dev/ttyACM0").unwrap();
         assert!(p.ends_with("wifi-densepose/esp32-provision-state/_dev_ttyACM0.json"));
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn sanitize_port_matches_state_file_stem() {
+        // A scanned port must sanitize to the exact stem provision.py wrote, so
+        // the reconciler can join a live USB port to its provision-state file.
+        assert_eq!(sanitize_port("/dev/ttyACM0"), "_dev_ttyACM0");
+        assert_eq!(sanitize_port("/dev/ttyUSB1"), "_dev_ttyUSB1");
+        // The state path's file stem is exactly sanitize_port(port).
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/tn-xdg");
+        let p = provision_state_path("/dev/ttyACM0").unwrap();
+        let stem = p.file_stem().unwrap().to_string_lossy().into_owned();
+        assert_eq!(stem, sanitize_port("/dev/ttyACM0"));
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn device_bucket_classification() {
+        // Streaming dominates — a board sending fresh frames is working, period.
+        assert_eq!(classify_device_bucket(true, true), "streaming");
+        assert_eq!(classify_device_bucket(false, true), "streaming");
+        // Known but silent → attention (offline/placement/TX reboot), not re-flash.
+        assert_eq!(classify_device_bucket(true, false), "provisioned");
+        // Only known via USB → needs first-time setup.
+        assert_eq!(classify_device_bucket(false, false), "unprovisioned");
     }
 
     #[test]
@@ -7860,6 +8117,7 @@ async fn main() {
         // preflight; scan/flash/provision drive esptool + provision.py on a
         // board over USB.
         .route("/api/v1/setup/doctor", get(setup_doctor))
+        .route("/api/v1/setup/fleet", get(setup_fleet))
         .route("/api/v1/setup/scan", get(setup_scan))
         .route("/api/v1/setup/flash", post(setup_flash))
         .route("/api/v1/setup/provision", post(setup_provision))
