@@ -374,8 +374,12 @@ UI. See **Phase R** above. Current front:*
    deployed node), and **`POST /api/v1/setup/ota {node}`** streams the bundled app image to the node's
    PSK-authed A/B OTA endpoint (`<ip>:8032`, ADR-050) — the node's own LAN IP learned from the source of
    its live CSI (`NodeState::last_src_ip`); the Devices console shows a real armed OTA button on deployed
-   nodes (`has_ota_psk`/`ota_ready`), with a beacon-only TX honestly USB-only. Remaining live-verify: a real
-   OTA flash to hardware (fleet powered + one USB re-provision for the key). Also fixed a phantom-node leak
+   nodes (`has_ota_psk`/`ota_ready`), with a beacon-only TX honestly USB-only. **Verified on hardware
+   (2026-06-15):** node 1's push flipped `ota_0`→`ota_1`, then the whole fleet was USB-flashed + PSK-keyed
+   (nodes 1 & 2 `ota_ready`; TX OTA-keyed — `/ota/status` shows the fixed image, `POST /ota` fail-closed);
+   live-verify also caught two real firmware bugs (httpd stack 4K→8K, `OTA_MAX_SIZE` 900K→1.5M). One polish
+   remains: a `setup_ota` ARP/mDNS fallback so the beacon-only TX (no CSI → no learnable IP) is one-click.
+   Also fixed a phantom-node leak
    (stale `node_states` surfacing as fake "unprovisioned" rows; §4c now requires the node be streaming).
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
