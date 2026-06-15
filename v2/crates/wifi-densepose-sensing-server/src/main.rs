@@ -4908,6 +4908,46 @@ fn setup_paths() -> SetupPaths {
     }
 }
 
+// Keeps the extracted-firmware temp dir alive while esptool reads it. Unit type
+// when embed-firmware is off (firmware is always on disk then).
+#[cfg(feature = "embed-firmware")]
+type FirmwareGuard = Option<tempfile::TempDir>;
+#[cfg(not(feature = "embed-firmware"))]
+type FirmwareGuard = ();
+
+/// Resolve a directory holding the 4 S3 bins. Prefers an on-disk dir (dev +
+/// `THROUGHNET_FIRMWARE_DIR` override); with `embed-firmware`, falls back to
+/// extracting the firmware embedded in the binary (A4 self-contained). The
+/// returned guard must be kept alive until flashing finishes.
+fn resolve_firmware_dir(disk_dir: &std::path::Path) -> Result<(PathBuf, FirmwareGuard), String> {
+    let on_disk = S3_FLASH_LAYOUT.iter().all(|(_, n)| disk_dir.join(n).exists());
+    #[cfg(feature = "embed-firmware")]
+    {
+        if on_disk {
+            return Ok((disk_dir.to_path_buf(), None));
+        }
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e}"))?;
+        for (_, name) in S3_FLASH_LAYOUT {
+            let data = EmbeddedFirmware::get(name)
+                .ok_or_else(|| format!("embedded firmware missing: {name}"))?;
+            std::fs::write(tmp.path().join(name), &data.data)
+                .map_err(|e| format!("write {name}: {e}"))?;
+        }
+        Ok((tmp.path().to_path_buf(), Some(tmp)))
+    }
+    #[cfg(not(feature = "embed-firmware"))]
+    {
+        if on_disk {
+            return Ok((disk_dir.to_path_buf(), ()));
+        }
+        Err(format!(
+            "firmware not found at {} and not embedded — build with --features embed-firmware \
+             (or bundle), or set THROUGHNET_FIRMWARE_DIR to a dir with the 4 .bin files",
+            disk_dir.display()
+        ))
+    }
+}
+
 /// String-shape guard against path injection in a `port` parameter (pure, so
 /// it's unit-testable without a device present).
 fn serial_port_shape_ok(p: &str) -> bool {
@@ -5049,17 +5089,16 @@ async fn setup_flash(Json(req): Json<FlashReq>) -> (StatusCode, Json<serde_json:
         );
     }
     let paths = setup_paths();
-    for (_, name) in S3_FLASH_LAYOUT {
-        if !paths.firmware_dir.join(name).exists() {
+    // _fw_guard keeps the extracted-firmware temp dir alive across the flash.
+    let (fw_dir, _fw_guard) = match resolve_firmware_dir(&paths.firmware_dir) {
+        Ok(v) => v,
+        Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "success": false,
-                    "error": format!("firmware binary missing: {}", paths.firmware_dir.join(name).display()),
-                })),
+                Json(serde_json::json!({ "success": false, "error": e })),
             );
         }
-    }
+    };
     let baud = req.baud.unwrap_or(460800).to_string();
     let mut cmd = tokio::process::Command::new(&paths.python);
     cmd.args([
@@ -5068,7 +5107,7 @@ async fn setup_flash(Json(req): Json<FlashReq>) -> (StatusCode, Json<serde_json:
     ]);
     for (off, name) in S3_FLASH_LAYOUT {
         cmd.arg(off);
-        cmd.arg(paths.firmware_dir.join(name));
+        cmd.arg(fw_dir.join(name));
     }
     let started = std::time::Instant::now();
     match tokio::time::timeout(std::time::Duration::from_secs(240), cmd.output()).await {
@@ -5219,6 +5258,25 @@ mod doctor_tests {
         let p = provision_state_path("/dev/ttyACM0").unwrap();
         assert!(p.ends_with("wifi-densepose/esp32-provision-state/_dev_ttyACM0.json"));
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn resolve_firmware_prefers_on_disk_dir() {
+        // A dir holding all 4 bins is used directly (no embed extraction).
+        let tmp = tempfile::tempdir().unwrap();
+        for (_, name) in super::S3_FLASH_LAYOUT {
+            std::fs::write(tmp.path().join(name), b"stub").unwrap();
+        }
+        let (dir, _guard) = super::resolve_firmware_dir(tmp.path()).unwrap();
+        assert_eq!(dir, tmp.path());
+    }
+
+    #[test]
+    #[cfg(not(feature = "embed-firmware"))]
+    fn resolve_firmware_errors_when_absent_and_not_embedded() {
+        // Without the embedded fallback, a missing firmware dir is a clear error.
+        let missing = std::path::Path::new("/nonexistent/tn-fw-does-not-exist");
+        assert!(super::resolve_firmware_dir(missing).is_err());
     }
 
     #[test]
@@ -5652,6 +5710,14 @@ async fn info_page() -> Html<String> {
 #[derive(rust_embed::RustEmbed)]
 #[folder = "../../../app/dist"]
 struct EmbeddedUi;
+
+/// ADR-151 A4 — the bundled ESP32-S3 firmware, embedded into the binary so the
+/// shipped artifact carries its own firmware (no `release_bins/` dir needed at
+/// flash time). Present only with `embed-firmware`.
+#[cfg(feature = "embed-firmware")]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../../../firmware/esp32-csi-node/release_bins/throughnet-s3-nodisp"]
+struct EmbeddedFirmware;
 
 /// Serve one embedded asset by path, falling back to `index.html` (the app
 /// routes via query params, so any unknown path is the SPA shell).

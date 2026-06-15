@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ThroughNet app launcher (ADR-151 A2 — server-as-shell).
 #
-# Builds the from-scratch UI (app/dist), builds the single-binary sensing-server
-# with the UI embedded (rust-embed, --features embed-ui), runs it, and opens it
-# app-mode in Chromium. Any extra args pass through to the server, e.g.:
+# Builds the from-scratch UI (app/dist), builds the single self-contained
+# sensing-server with the UI *and* the ESP32 firmware embedded (rust-embed,
+# --features bundle), runs it, and opens it app-mode in Chromium. Any extra args
+# pass through to the server, e.g.:
 #
 #   scripts/throughnet-app.sh --source esp32
 #
@@ -15,8 +16,8 @@ PORT="${TN_HTTP_PORT:-8080}"
 echo "==> building UI (app/dist)"
 ( cd "$ROOT/app" && npm install --no-audit --no-fund --silent && npm run build )
 
-echo "==> building server (single binary, --features embed-ui)"
-( cd "$ROOT/v2" && cargo build --release --features embed-ui -p wifi-densepose-sensing-server )
+echo "==> building server (single self-contained binary, --features bundle: UI + firmware)"
+( cd "$ROOT/v2" && cargo build --release --features bundle -p wifi-densepose-sensing-server )
 BIN="$ROOT/v2/target/release/sensing-server"
 
 echo "==> starting ThroughNet on http://localhost:$PORT/"

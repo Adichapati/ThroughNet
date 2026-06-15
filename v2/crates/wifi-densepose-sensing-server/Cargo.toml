@@ -28,6 +28,9 @@ tower-http = { version = "0.6", features = ["fs", "cors", "set-header"] }
 # in debug builds too (not just release).
 rust-embed = { version = "8", features = ["debug-embed"], optional = true }
 mime_guess = { version = "2", optional = true }
+# ADR-151 A4 — extract the embedded firmware to a temp dir for esptool to flash.
+# Optional (behind embed-firmware); also a dev-dep for integration tests.
+tempfile = { version = "3.10", optional = true }
 tokio = { workspace = true, features = ["full", "process"] }
 futures-util = "0.3"
 ruvector-mincut = { workspace = true }
@@ -93,6 +96,12 @@ default = []
 # default so the normal workspace build/test needs no app/dist; the release/app
 # build runs `vite build` (in app/) then builds with `--features embed-ui`.
 embed-ui = ["dep:rust-embed", "dep:mime_guess"]
+# ADR-151 A4 — embed the bundled ESP32-S3 firmware (release_bins/throughnet-s3-nodisp)
+# so the shipped binary carries its own firmware; the flash endpoint extracts it
+# to a temp dir when no on-disk firmware dir is present.
+embed-firmware = ["dep:rust-embed", "dep:tempfile"]
+# The full self-contained product binary: UI + firmware embedded.
+bundle = ["embed-ui", "embed-firmware"]
 # Enables the ADR-115 §2 MQTT auto-discovery publisher. Without this feature
 # all `--mqtt-*` CLI flags still parse (cli.rs declares them unconditionally),
 # but enabling `--mqtt` at runtime logs a `WARN` and the publisher is a no-op.
