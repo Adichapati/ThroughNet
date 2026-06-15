@@ -416,6 +416,11 @@ struct NodeState {
     vital_detector: VitalSignDetector,
     latest_vitals: VitalSigns,
     pub(crate) last_frame_time: Option<std::time::Instant>,
+    /// Source IP of the most recent CSI/vitals UDP packet from this node — the
+    /// node's own LAN address (DHCP-dynamic), learned from `recv_from`. Used to
+    /// reach the node's OTA endpoint (`<ip>:8032`) for network firmware updates.
+    /// `None` until a packet arrives; a beacon-only TX never sets it.
+    pub(crate) last_src_ip: Option<std::net::IpAddr>,
     edge_vitals: Option<Esp32VitalsPacket>,
     /// ADR-110 §A0.12: Latest sync packet received from this node. When a
     /// CSI frame arrives with byte 19 bit 4 set (`adr018_flags.ieee802154_sync_valid`),
@@ -634,6 +639,7 @@ impl NodeState {
             vital_detector: VitalSignDetector::new(10.0),
             latest_vitals: VitalSigns::default(),
             last_frame_time: None,
+            last_src_ip: None,
             edge_vitals: None,
             latest_sync: None,
             latest_sync_at: None,
@@ -5038,6 +5044,60 @@ fn provision_state_path(port: &str) -> Option<PathBuf> {
     Some(provision_state_dir()?.join(format!("{}.json", sanitize_port(port))))
 }
 
+/// Lowercase hex-encode bytes (no allocation crate needed).
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Generate a fresh 64-hex-char (256-bit) OTA pre-shared key. Reads OS entropy
+/// from `/dev/urandom` (unix); on other platforms — or if that read fails —
+/// falls back to a SHA-256 of high-resolution time + pid (best-effort; the
+/// product runs on Linux where the primary path always succeeds).
+fn generate_ota_psk() -> String {
+    let mut bytes = [0u8; 32];
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        if std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut bytes))
+            .is_ok()
+        {
+            return hex_encode(&bytes);
+        }
+    }
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    h.update(nanos.to_le_bytes());
+    h.update(std::process::id().to_le_bytes());
+    hex_encode(&h.finalize())
+}
+
+/// Find the OTA PSK on record for a node, scanning the per-port provision-state
+/// files for the one whose `node_id` matches. Returns `None` if no state file
+/// has that node or none carries an `ota_psk` (→ OTA not yet enabled for it).
+fn ota_psk_for_node(node_id: u64) -> Option<String> {
+    let dir = provision_state_dir()?;
+    for e in std::fs::read_dir(&dir).ok()?.flatten() {
+        let Ok(txt) = std::fs::read_to_string(e.path()) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) else { continue };
+        if v.get("node_id").and_then(|x| x.as_u64()) == Some(node_id) {
+            if let Some(psk) = v.get("ota_psk").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+                return Some(psk.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// A single USB serial port probed with `esptool flash_id`.
 struct PortProbe {
     path: String,
@@ -5255,6 +5315,21 @@ async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<ser
     if let Some(ip) = target_ip.as_deref() {
         cmd.args(["--target-ip", ip]);
     }
+    // Enable OTA-over-network on first provision: if this board has no OTA key on
+    // record, generate one and pass it through. provision.py writes it to the
+    // `security` NVS namespace (the firmware's fail-closed Bearer key, ADR-050)
+    // and persists it in the per-port state so the OTA endpoint can authenticate
+    // later. A single USB (re-)provision is all an existing node needs to become
+    // network-updatable; subsequent provisions keep the key (it round-trips).
+    let prior_has_psk = provision_state_path(&req.port)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("ota_psk").and_then(|x| x.as_str()).map(|s| !s.is_empty()))
+        .unwrap_or(false);
+    let new_psk = if prior_has_psk { None } else { Some(generate_ota_psk()) };
+    if let Some(ref psk) = new_psk {
+        cmd.args(["--ota-psk", psk]);
+    }
     match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await {
         Ok(Ok(o)) => {
             let log = format!(
@@ -5280,6 +5355,7 @@ async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<ser
                 "port": req.port,
                 "role": role,
                 "node_id": node_id,
+                "ota_enabled": success && new_psk.is_some(),
                 "log": log,
             })))
         }
@@ -5291,6 +5367,126 @@ async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<ser
             StatusCode::GATEWAY_TIMEOUT,
             Json(serde_json::json!({ "success": false, "error": "provision timed out (120 s)" })),
         ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OtaReq {
+    /// The node to update (its `node_id`). The server resolves its current LAN
+    /// IP from live CSI and its OTA key from the per-port provision state.
+    node: u64,
+}
+
+/// POST /api/v1/setup/ota — push the bundled app firmware to a deployed node
+/// over the network (no USB). Streams the embedded/on-disk app image to the
+/// node's PSK-authed OTA endpoint (`<ip>:8032/ota`, ADR-050); the firmware does
+/// an A/B partition flip + reboot with rollback. The node's own LAN IP is
+/// learned from the source of its live CSI (DHCP-dynamic, so we can't store it),
+/// and the OTA key comes from the per-port state (`provision.py --ota-psk`, set
+/// automatically on provision). A beacon-only TX sends no CSI → no IP learned →
+/// it must be updated over USB (and you'd want the deliberate USB path for the
+/// illuminator anyway, given the mesh blackout).
+async fn setup_ota(
+    State(state): State<SharedState>,
+    Json(req): Json<OtaReq>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    // 1. Resolve the node's LAN IP from a *fresh* live entry (release lock fast).
+    let ip = {
+        let s = state.read().await;
+        let now = std::time::Instant::now();
+        s.node_states.get(&(req.node as u8)).and_then(|ns| {
+            let fresh = ns
+                .last_frame_time
+                .map(|t| now.saturating_duration_since(t) <= ESP32_OFFLINE_TIMEOUT)
+                .unwrap_or(false);
+            if fresh { ns.last_src_ip } else { None }
+        })
+    };
+    let Some(ip) = ip else {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({
+            "success": false,
+            "error": format!("node {} isn't streaming — OTA needs it reachable on the network \
+                (its IP is learned from live CSI). Bring it online, or update it over USB. \
+                A beacon-only TX can only be updated over USB.", req.node),
+        })));
+    };
+
+    // 2. OTA key on record (provision.py --ota-psk). No key → re-provision once.
+    let Some(psk) = ota_psk_for_node(req.node) else {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({
+            "success": false,
+            "error": format!("no OTA key for node {} — re-provision it once over USB to enable \
+                network updates (provisioning sets the key automatically).", req.node),
+        })));
+    };
+
+    // 3. The app image (offset 0x20000) — same resolver as flash (disk/embedded).
+    let paths = setup_paths();
+    let (fw_dir, _fw_guard) = match resolve_firmware_dir(&paths.firmware_dir) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "success": false, "error": e }))),
+    };
+    // S3_FLASH_LAYOUT[3] = ("0x20000", "esp32-csi-node.bin") — the app partition.
+    let app_bin = fw_dir.join(S3_FLASH_LAYOUT[3].1);
+    let bytes = match std::fs::read(&app_bin) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false, "error": format!("read app image {}: {e}", app_bin.display()),
+        }))),
+    };
+    let size = bytes.len();
+
+    // 4. POST the image to the node's OTA endpoint (blocking ureq off-thread).
+    let url = format!("http://{ip}:8032/ota");
+    let started = std::time::Instant::now();
+    let post = tokio::task::spawn_blocking(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(std::time::Duration::from_secs(5))
+            .timeout_write(std::time::Duration::from_secs(60))
+            .timeout_read(std::time::Duration::from_secs(180))
+            .build();
+        agent
+            .post(&url)
+            .set("Authorization", &format!("Bearer {psk}"))
+            .set("Content-Type", "application/octet-stream")
+            .send_bytes(&bytes)
+    })
+    .await;
+    let elapsed_s = started.elapsed().as_secs();
+
+    match post {
+        Ok(Ok(resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            info!("OTA: node {} updated via {ip}:8032 ({size} bytes, {elapsed_s}s)", req.node);
+            (StatusCode::OK, Json(serde_json::json!({
+                "success": true,
+                "node": req.node,
+                "ip": ip.to_string(),
+                "bytes": size,
+                "elapsed_s": elapsed_s,
+                "message": format!("firmware pushed ({} KB) — node is rebooting to the new image", size / 1024),
+                "device_response": body,
+            })))
+        }
+        // ureq surfaces a non-2xx as Err(Status); 403 = PSK mismatch (stale key).
+        Ok(Err(ureq::Error::Status(code, resp))) => {
+            let body = resp.into_string().unwrap_or_default();
+            let hint = if code == 403 {
+                " — the node rejected the OTA key (403). Re-provision it over USB so its key matches."
+            } else { "" };
+            (StatusCode::BAD_GATEWAY, Json(serde_json::json!({
+                "success": false,
+                "error": format!("node returned HTTP {code}{hint}"),
+                "device_response": body,
+            })))
+        }
+        Ok(Err(e)) => (StatusCode::BAD_GATEWAY, Json(serde_json::json!({
+            "success": false,
+            "error": format!("couldn't reach node OTA endpoint at {ip}:8032 ({e})"),
+        }))),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false, "error": format!("OTA task failed: {e}"),
+        }))),
     }
 }
 
@@ -5346,6 +5542,9 @@ struct LiveNode {
     rssi_dbm: f64,
     csi_fps: Option<f64>,
     last_seen_s: Option<u64>,
+    /// The node's own LAN IP (from the last UDP source) — present means we can
+    /// reach its OTA endpoint. `None` for a node we've never received from.
+    has_ip: bool,
 }
 
 /// GET /api/v1/setup/fleet — the fleet reconciler. Joins the per-port provision
@@ -5371,6 +5570,7 @@ async fn setup_fleet(
                         rssi_dbm: ns.rssi_history.back().copied().unwrap_or(-90.0),
                         csi_fps: if ns.csi_fps_samples >= 5 { Some(ns.csi_fps_ema) } else { None },
                         last_seen_s: last_seen.map(|d| d.as_secs()),
+                        has_ip: ns.last_src_ip.is_some(),
                     },
                 )
             })
@@ -5427,6 +5627,11 @@ async fn setup_fleet(
         let online = ln.map(|l| l.online).unwrap_or(false);
         let role = v.get("role").and_then(|x| x.as_str());
         let probe = probe_by_stem.get(stem).copied();
+        // OTA-over-network is possible only when we have an OTA key on record AND
+        // we currently know the node's LAN IP (learned from live CSI). A
+        // beacon-only TX sends no CSI, so we never learn its IP → update over USB.
+        let has_ota_psk = v.get("ota_psk").map(|p| !p.is_null()).unwrap_or(false);
+        let ota_ready = online && has_ota_psk && ln.map(|l| l.has_ip).unwrap_or(false);
         // Never expose stored credentials — only whether one is on record.
         devices.push(serde_json::json!({
             "node_id": node_id,
@@ -5436,6 +5641,8 @@ async fn setup_fleet(
             "filter_mac": v.get("filter_mac").and_then(|x| x.as_str()),
             "wifi_mac": v.get("wifi_mac").and_then(|x| x.as_str()),
             "has_password": v.get("password").map(|p| !p.is_null()).unwrap_or(false),
+            "has_ota_psk": has_ota_psk,
+            "ota_ready": ota_ready,
             "provisioned": true,
             "present": probe.is_some(),
             "port": probe.map(|p| p.path.clone()),
@@ -5475,8 +5682,13 @@ async fn setup_fleet(
     }
 
     // 4c. Streaming nodes we have no state file for (provisioned elsewhere).
+    // Only surface ones that are actually live: an uncovered *offline* node isn't
+    // actionable here — it's a stale `node_states` artifact. Stray/malformed UDP
+    // accrues bogus node-ids that aren't evicted while the ingest loop sits idle
+    // (no frames → no prune tick), and those would otherwise leak in as phantom
+    // "unprovisioned" rows (≈50 seen after a long idle session).
     for (&id, l) in &live {
-        if covered_ids.contains(&id) {
+        if covered_ids.contains(&id) || !l.online {
             continue;
         }
         devices.push(serde_json::json!({
@@ -5614,8 +5826,8 @@ fn restart_process() -> ! {
 mod doctor_tests {
     use super::{
         classify_device_bucket, device_bucket, device_link_up, doctor_check, doctor_csi_check,
-        parse_flash_id, provision_state_path, sanitize_port, serial_port_shape_ok,
-        valid_provision_role, LogStore,
+        generate_ota_psk, hex_encode, parse_flash_id, provision_state_path, sanitize_port,
+        serial_port_shape_ok, valid_provision_role, LogStore,
     };
 
     #[test]
@@ -5727,6 +5939,18 @@ mod doctor_tests {
         // Non-TX and streaming devices fall through to the plain classifier.
         assert_eq!(device_bucket(true, Some("rx"), false, true), "provisioned");
         assert_eq!(device_bucket(true, Some("tx"), true, false), "streaming");
+    }
+
+    #[test]
+    fn ota_psk_is_64_hex_chars_and_unique() {
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff, 0xa5]), "000fffa5");
+        let a = generate_ota_psk();
+        let b = generate_ota_psk();
+        // 256 bits → 64 hex chars, all lowercase hex.
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Fresh entropy each call (would only collide by ~2^-256 chance).
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -6288,6 +6512,7 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                     let node_id = vitals.node_id;
                     let ns = s.node_states.entry(node_id).or_insert_with(NodeState::new);
                     ns.last_frame_time = Some(std::time::Instant::now());
+                    ns.last_src_ip = Some(src.ip());
                     ns.edge_vitals = Some(vitals.clone());
                     ns.rssi_history.push_back(vitals.rssi as f64);
                     if ns.rssi_history.len() > 60 {
@@ -6670,6 +6895,9 @@ async fn udp_receiver_task(state: SharedState, udp_port: u16) {
                     // CSI arrivals. The helper sets `last_frame_time` as a
                     // side effect, so the previous bare assignment is gone.
                     ns.observe_csi_frame_arrival(std::time::Instant::now());
+                    // Learn the node's own LAN IP for network OTA (its address is
+                    // DHCP-dynamic; the UDP source is the only place we see it).
+                    ns.last_src_ip = Some(src.ip());
 
                     // ADR-084 Pass 3: cluster-Pi novelty sensor.
                     // Score this frame's feature vector against the per-node
@@ -8420,6 +8648,7 @@ async fn main() {
         .route("/api/v1/setup/scan", get(setup_scan))
         .route("/api/v1/setup/flash", post(setup_flash))
         .route("/api/v1/setup/provision", post(setup_provision))
+        .route("/api/v1/setup/ota", post(setup_ota))
         .route("/api/v1/server/status", get(server_status))
         .route("/api/v1/server/logs", get(server_logs))
         .route("/api/v1/server/restart", post(server_restart))

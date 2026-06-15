@@ -7,7 +7,7 @@
 import { LitElement, html, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
-  fetchFleet, flashBoard, provisionBoard, MOCK_FLEET,
+  fetchFleet, flashBoard, provisionBoard, updateOta, MOCK_FLEET,
   type FleetReport, type FleetDevice,
 } from '../onboarding/tn-setup';
 
@@ -22,9 +22,10 @@ export class TnDevices extends LitElement {
   @state() private scanning = false;
   @state() private err = false;
   @state() private open?: string;            // expanded device (keyOf)
-  @state() private busy = '';                // 'flash' | 'provision' while in flight
+  @state() private busy = '';                // 'flash' | 'provision' | 'ota' while in flight
   @state() private actionMsg?: { ok: boolean; text: string };
   @state() private reflashArm = false;       // TX/known-board re-flash confirm
+  @state() private otaArm = false;            // network-OTA confirm (node reboots)
   // re-provision form (seeded from the device when its panel opens)
   @state() private fSsid = '';
   @state() private fPassword = '';
@@ -59,7 +60,7 @@ export class TnDevices extends LitElement {
   private toggle(d: FleetDevice) {
     const k = this.keyOf(d);
     if (this.open === k) { this.open = undefined; return; }
-    this.open = k; this.reflashArm = false; this.actionMsg = undefined;
+    this.open = k; this.reflashArm = false; this.otaArm = false; this.actionMsg = undefined;
     this.fSsid = d.ssid ?? ''; this.fPassword = ''; this.fRole = d.role ?? '';
   }
 
@@ -83,14 +84,45 @@ export class TnDevices extends LitElement {
         ? (await this.delay(900), { success: true, role: this.fRole || d.role || 'rx', nodeId: d.nodeId ?? 4 })
         : await provisionBoard({ port: d.port, ssid: this.fSsid, password: this.fPassword, role: this.fRole || undefined });
       this.actionMsg = r.success
-        ? { ok: true, text: `provisioned ✓ · node ${r.nodeId ?? '?'} · ${r.role ?? 'rx'}` }
+        ? { ok: true, text: `provisioned ✓ · node ${r.nodeId ?? '?'} · ${r.role ?? 'rx'}${r.otaEnabled ? ' · OTA enabled' : ''}` }
         : { ok: false, text: r.error ?? 'provision failed' };
       if (r.success && !isMock()) await this.scanUsb();
     } catch (e) { this.actionMsg = { ok: false, text: String(e) }; }
     finally { this.busy = ''; }
   }
 
+  private async doOta(d: FleetDevice) {
+    if (d.nodeId == null) return;
+    this.busy = 'ota'; this.actionMsg = undefined;
+    try {
+      const r = isMock()
+        ? (await this.delay(1400), { success: true, bytes: 786432, message: 'firmware pushed — node rebooting to the new image' })
+        : await updateOta(d.nodeId);
+      this.actionMsg = r.success
+        ? { ok: true, text: r.message ?? 'firmware pushed — node rebooting' }
+        : { ok: false, text: r.error ?? 'OTA failed' };
+      this.otaArm = false;
+      // The node reboots; let it drop offline then come back before we re-poll.
+      if (r.success && !isMock()) { await this.delay(1500); this.refresh(); }
+    } catch (e) { this.actionMsg = { ok: false, text: String(e) }; }
+    finally { this.busy = ''; }
+  }
+
   private delay(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+
+  private renderOta(d: FleetDevice): TemplateResult {
+    const busy = !!this.busy;
+    if (!d.otaReady) {
+      const why = d.role === 'tx' ? 'the illuminator can only be updated over USB (it sends no CSI, so we never learn its IP)'
+        : !d.hasOtaPsk ? 're-provision this board once over USB to enable network updates'
+        : 'the node must be online (streaming) to update it over the network';
+      return html`<button class="dv-btn ghost" disabled title=${why}>update (OTA)</button>`;
+    }
+    return this.otaArm
+      ? html`<button class="dv-btn danger" @click=${() => this.doOta(d)} ?disabled=${busy}>${this.busy === 'ota' ? 'updating…' : 'confirm update'}</button>
+             <button class="dv-btn ghost" @click=${() => (this.otaArm = false)} ?disabled=${busy}>cancel</button>`
+      : html`<button class="dv-btn" @click=${() => (this.otaArm = true)} ?disabled=${busy}>update (OTA)</button>`;
+  }
 
   render() {
     const f = this.fleet;
@@ -146,11 +178,15 @@ export class TnDevices extends LitElement {
     const busy = !!this.busy;
     return html`<div class="dv-actions" @click=${(e: Event) => e.stopPropagation()}>
       ${!present ? html`
-        <p class="muted">
-          ${d.online ? 'online and streaming — nothing to do. '
-            : d.linkUp ? 'this illuminator is up — beaconing. nothing to do. ' : ''}plug this board into USB and hit
-          <b>scan USB</b> above to flash or re-provision it.
-        </p>` : html`
+        ${d.otaReady ? html`
+          <p class="muted">deployed and streaming — push a firmware update over the network, no USB needed. The node A/B-flashes and reboots to the new image (~20&nbsp;s offline, with rollback if it fails to boot).</p>
+          <div class="dv-btns"><span style="flex:1"></span>${this.renderOta(d)}</div>`
+        : html`
+          <p class="muted">
+            ${d.online ? 'online and streaming — nothing to do. '
+              : d.linkUp ? 'this illuminator is up — beaconing. nothing to do. ' : ''}${!d.hasOtaPsk && d.role !== 'tx' ? 're-provision once over USB to enable network (OTA) updates. ' : ''}plug this board into USB and hit
+            <b>scan USB</b> above to flash or re-provision it.
+          </p>`}` : html`
         ${tx ? html`<div class="dv-warn">⚠ this is your TX illuminator — re-flashing reboots the beacon and every receiver goes dark for ~20&nbsp;s while it returns. Re-provisioning is safe.</div>` : ''}
         <div class="dv-form">
           <label>wi-fi<input type="text" .value=${this.fSsid} placeholder=${d.ssid ?? 'network'}
@@ -174,7 +210,7 @@ export class TnDevices extends LitElement {
                 : html`<button class="dv-btn" @click=${() => (this.reflashArm = true)} ?disabled=${busy}>re-flash firmware</button>`)
             : html`<button class="dv-btn" @click=${() => this.doFlash(d)} ?disabled=${busy}>${this.busy === 'flash' ? 'flashing…' : 'flash firmware'}</button>`}
           <span style="flex:1"></span>
-          <button class="dv-btn ghost" disabled title="over-the-air update — coming soon">update (OTA) · soon</button>
+          <span class="muted" style="align-self:center;font-size:12px">on USB — flash here; OTA is for deployed nodes</span>
         </div>`}
       ${this.actionMsg ? html`<div class="dv-msg ${this.actionMsg.ok ? 'ok' : 'bad'}">${this.actionMsg.text}</div>` : ''}
     </div>`;

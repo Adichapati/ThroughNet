@@ -83,6 +83,7 @@ CONFIG_VALUE_CHECKS = [
     ("zone", lambda value: value is not None),
     ("swarm_hb", lambda value: value is not None),
     ("swarm_ingest", lambda value: value is not None),
+    ("ota_psk", lambda value: value is not None),
 ]
 
 
@@ -113,6 +114,7 @@ MERGEABLE_ATTRS = [
     "role", "beacon_hz", "lock_bssid",
     "hop_channels", "hop_dwell",
     "seed_url", "seed_token", "zone", "swarm_hb", "swarm_ingest",
+    "ota_psk",
 ]
 
 
@@ -360,6 +362,15 @@ def build_nvs_csv(args):
         writer.writerow(["swarm_hb", "data", "u16", str(args.swarm_hb)])
     if args.swarm_ingest is not None:
         writer.writerow(["swarm_ingest", "data", "u16", str(args.swarm_ingest)])
+    # ADR-050: OTA pre-shared key lives in its OWN namespace ("security"), which
+    # the firmware's ota_update.c reads (fail-closed Bearer auth on port 8032).
+    # Declared AFTER all csi_cfg rows so this key partitions into `security`, not
+    # `csi_cfg`. Re-emitted every flash from the merged state (ota_psk is a
+    # MERGEABLE_ATTR) so a later partial provision never wipes it — the whole NVS
+    # partition is regenerated from this CSV each time.
+    if args.ota_psk:
+        writer.writerow(["security", "namespace", "", ""])
+        writer.writerow(["ota_psk", "data", "string", args.ota_psk])
     return buf.getvalue()
 
 
@@ -495,6 +506,13 @@ def main():
     parser.add_argument("--zone", type=str, help="Zone name for this node (e.g. lobby, hallway)")
     parser.add_argument("--swarm-hb", type=int, help="Swarm heartbeat interval in seconds (default 30)")
     parser.add_argument("--swarm-ingest", type=int, help="Swarm vector ingest interval in seconds (default 5)")
+    # ADR-050: OTA-over-network pre-shared key (fail-closed Bearer auth on :8032)
+    parser.add_argument("--ota-psk", type=str, dest="ota_psk",
+                        help="OTA pre-shared key (hex, 8-64 chars) written to the 'security' NVS "
+                        "namespace. Enables PSK-authed network firmware updates (POST /ota on port "
+                        "8032). The sensing-server sets this automatically on provision; pass it "
+                        "manually only to pin a known key. Round-trips in per-port state, so a later "
+                        "partial provision won't wipe it.")
     parser.add_argument("--dry-run", action="store_true", help="Generate NVS binary but don't flash")
     parser.add_argument("--force-partial", action="store_true",
                         help="[deprecated since #391/#574] Suppress the missing-WiFi-trio "
@@ -608,6 +626,12 @@ def main():
               "ambient traffic instead of just the TX beacon. Pass --filter-mac <TX MAC>.",
               file=sys.stderr)
 
+    # ADR-050: the firmware caches the PSK in a 65-byte buffer (64 hex + NUL) and
+    # compares the Bearer token verbatim, so keep it hex and <=64 chars.
+    if args.ota_psk is not None:
+        if not re.fullmatch(r"[0-9a-fA-F]{8,64}", args.ota_psk):
+            parser.error("--ota-psk must be 8-64 hex characters")
+
     print("Building NVS configuration:")
     if args.ssid:
         print(f"  WiFi SSID:     {args.ssid}")
@@ -654,6 +678,8 @@ def main():
         print(f"  Swarm HB:      {args.swarm_hb}s")
     if args.swarm_ingest is not None:
         print(f"  Swarm Ingest:  {args.swarm_ingest}s")
+    if args.ota_psk:
+        print(f"  OTA PSK:       (set, {len(args.ota_psk)} chars) — network updates enabled")
 
     csv_content = build_nvs_csv(args)
 

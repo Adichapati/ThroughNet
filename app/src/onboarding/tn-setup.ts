@@ -85,6 +85,7 @@ export interface ProvisionResult {
   success: boolean;
   role?: string | null;
   nodeId?: number | null;
+  otaEnabled?: boolean;      // an OTA key was set this provision (network updates now possible)
   error?: string;
 }
 
@@ -105,7 +106,34 @@ export async function provisionBoard(
     body: JSON.stringify(body),
   });
   const j: any = await res.json().catch(() => ({}));
-  return { success: !!j?.success, role: j?.role ?? null, nodeId: j?.node_id ?? null, error: j?.error };
+  return {
+    success: !!j?.success, role: j?.role ?? null, nodeId: j?.node_id ?? null,
+    otaEnabled: !!j?.ota_enabled, error: j?.error,
+  };
+}
+
+export interface OtaResult {
+  success: boolean;
+  bytes?: number;
+  elapsedS?: number;
+  message?: string;
+  error?: string;
+}
+
+/// POST /api/v1/setup/ota — push the bundled app firmware to a deployed node
+/// over the network (PSK-authed A/B OTA on the node's :8032). The node reboots
+/// to the new image on success.
+export async function updateOta(node: number, url = '/api/v1/setup/ota'): Promise<OtaResult> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ node }),
+  });
+  const j: any = await res.json().catch(() => ({}));
+  return {
+    success: !!j?.success, bytes: j?.bytes, elapsedS: j?.elapsed_s,
+    message: j?.message, error: j?.error,
+  };
 }
 
 // Used in ?mock (serverless demos) so the steps still have content.
@@ -131,6 +159,8 @@ export interface FleetDevice {
   present: boolean;          // plugged into this machine right now (needs ?scan)
   online: boolean;           // streaming fresh CSI frames (literal)
   linkUp: boolean;           // contributing to a working link (TX up when an RX streams)
+  hasOtaPsk: boolean;        // an OTA key is on record (network updates provisioned)
+  otaReady: boolean;         // can be updated over the network right now (key + reachable)
   port: string | null;
   chip: string | null;
   flashSize: string | null;
@@ -170,6 +200,8 @@ export async function fetchFleet(scan = false, base = '/api/v1/setup/fleet'): Pr
     present: !!d?.present,
     online: !!d?.online,
     linkUp: d?.link_up != null ? !!d.link_up : !!d?.online,
+    hasOtaPsk: !!d?.has_ota_psk,
+    otaReady: !!d?.ota_ready,
     port: d?.port ?? null,
     chip: d?.chip ?? null,
     flashSize: d?.flash_size ?? null,
@@ -250,11 +282,16 @@ export const MOCK_FLEET: FleetReport = {
   // false) but reads up via the streaming RX nodes; healthy = TX known + RX live.
   summary: { known: 3, online: 2, txOnline: 0, rxOnline: 2, healthy: true, scanned: true },
   devices: [
+    // TX beacons (no CSI of its own) and has no learnable IP → OTA over USB only.
     { nodeId: 1, role: 'tx', bucket: 'illuminating', provisioned: true, present: false, online: false, linkUp: true,
+      hasOtaPsk: true, otaReady: false,
       port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: null, csiFps: null, lastSeenS: null },
+    // RX streaming + OTA key on record → updatable over the network.
     { nodeId: 2, role: 'rx', bucket: 'streaming', provisioned: true, present: false, online: true, linkUp: true,
+      hasOtaPsk: true, otaReady: true,
       port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: -55, csiFps: 130, lastSeenS: 1 },
     { nodeId: 3, role: 'rx', bucket: 'streaming', provisioned: true, present: true, online: true, linkUp: true,
+      hasOtaPsk: true, otaReady: true,
       port: '/dev/ttyACM0', chip: 'ESP32-S3', flashSize: '16MB', ssid: 'KANAYAM', rssiDbm: -52, csiFps: 137, lastSeenS: 0 },
   ],
 };

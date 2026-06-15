@@ -368,8 +368,15 @@ UI. See **Phase R** above. Current front:*
    the TX illuminator on purpose) + `setup_provision --role`; OTA stubbed. Then the **Server/Ops page**
    (`tn-server` tab): runtime status, a live tail of the server's own log (in-memory ring tee'd from the
    tracing writer), and restart (re-exec) / shut down — backed by `/api/v1/server/{status,logs,restart,
-   shutdown}` (verified live: re-exec rebinds, shutdown exits clean). Remaining: **OTA-over-network**
-   firmware updates for deployed RX nodes (the Devices "update · soon" button).
+   shutdown}` (verified live: re-exec rebinds, shutdown exits clean). Finally **OTA-over-network**
+   landed, **completing the fleet-management track**: `provision.py --ota-psk` writes the firmware's
+   `security` NVS key, `setup_provision` auto-generates it on provision (one USB re-provision enables a
+   deployed node), and **`POST /api/v1/setup/ota {node}`** streams the bundled app image to the node's
+   PSK-authed A/B OTA endpoint (`<ip>:8032`, ADR-050) — the node's own LAN IP learned from the source of
+   its live CSI (`NodeState::last_src_ip`); the Devices console shows a real armed OTA button on deployed
+   nodes (`has_ota_psk`/`ota_ready`), with a beacon-only TX honestly USB-only. Remaining live-verify: a real
+   OTA flash to hardware (fleet powered + one USB re-provision for the key). Also fixed a phantom-node leak
+   (stale `node_states` surfacing as fake "unprovisioned" rows; §4c now requires the node be streaming).
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
