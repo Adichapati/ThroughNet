@@ -365,8 +365,11 @@ UI. See **Phase R** above. Current front:*
    the flash step skips a working board with a guarded "re-flash anyway"; a **TX guard** warns about the
    mesh blackout). The standalone **Devices console** (`tn-devices` tab) then landed: the full fleet from
    the reconciler with per-board re-provision / re-flash and an explicit **role** dropdown (assign/replace
-   the TX illuminator on purpose) + `setup_provision --role`; OTA stubbed. Next: **OTA-over-network**
-   updates for deployed RX nodes, then a **Server/Ops** page (status, live log, restart, source toggle).
+   the TX illuminator on purpose) + `setup_provision --role`; OTA stubbed. Then the **Server/Ops page**
+   (`tn-server` tab): runtime status, a live tail of the server's own log (in-memory ring tee'd from the
+   tracing writer), and restart (re-exec) / shut down — backed by `/api/v1/server/{status,logs,restart,
+   shutdown}` (verified live: re-exec rebinds, shutdown exits clean). Remaining: **OTA-over-network**
+   firmware updates for deployed RX nodes (the Devices "update · soon" button).
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
 
