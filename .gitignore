@@ -279,3 +279,5 @@ assets/MM-Fi/*.zip
 sdkconfig
 # Large CSI capture recordings (keep local, not in git — use LFS/releases if needed)
 data/recordings/
+# Multi-person feasibility captures + reports (tools/gate/feasibility.py output)
+data/feasibility/

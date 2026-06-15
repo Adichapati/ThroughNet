@@ -72,6 +72,41 @@ functions verified by `--selftest` (8 cases: liveness filtering, IP-change
 recover/never-return/no-baseline, add-node join/no-new/disturbed/dead-new).
 Exit code 0 (PASS) / 1 (FAIL).
 
+## Multi-person feasibility gate — `feasibility.py`
+
+The cheap **go/no-go** that decides whether multi-person tracking is even possible
+on this rig *before* committing to a drastic DSP/ML build. The physics: 1 TX + 2 RX
+= 2 links = 2 scalar measurements per instant; localizing *K* people needs ≥2*K*
+unknowns, so K=2 is marginal and K≥3 underdetermined. No model conjures information
+that wasn't measured — so first measure whether the signal can separate 1 from 2 at all.
+
+**Metric:** the eigen-spectrum of the joint CSI **amplitude** covariance (phase is
+unrecoverable on single-antenna boards), whitened against an empty-room baseline via a
+**Generalized Eigenvalue Decomposition (GEVD)**. K independently *moving* bodies excite
+K independent fading processes → K dominant generalized eigenvalues, so the effective
+rank / λ₂·λ₁⁻¹ rises with occupancy. The confound — one *vigorously* moving person also
+inflates the eigenvalues — is caught by a second **spatial axis** (per-link energy split:
+two people in different zones split energy across both links; one body concentrates it).
+
+```bash
+python tools/gate/feasibility.py --selftest                 # synthetic CSI, no hardware
+# with the fleet powered + sensing-server running (--source esp32):
+python tools/gate/feasibility.py capture --outdir data/feasibility/run1   # 8 ground-truth classes
+python tools/gate/feasibility.py analyze --manifest data/feasibility/run1/manifest.json --out report.json
+```
+
+`capture` walks you through 8 classes (`empty`, `1-still/walking/vigorous/crossing`,
+`2-still-apart/walking-apart/walking-same-zone`; ~60 s each) and records each via the
+server's `/api/v1/recording` API — **no server changes**. `analyze` parses the per-node
+`iq_hex` → amplitudes, builds the GEVD spectrum per class, and returns the **3-way
+verdict**: **GO** (eigenvalue axis separates 1 vs 2, incl. the vigorous control, with
+margin) / **PARTIAL** (needs the spatial axis too) / **NO-GO** (1-vigorous overlaps
+2-walking-same-zone on both axes → the 2 links are exhausted; only then is a TDM 3rd
+link justified). The decision is gated to *moving* windows (`dyn_energy` above the empty
+floor) — static multi-person is a known K=1 ceiling, reported but not gated. Requires
+`numpy`; scoring is verified by `--selftest` (6 checks: whitening sanity, 2-movers
+out-rank 1, the confound, the spatial rescue, and both the GO and NO-GO verdict paths).
+
 ## Phase-2 acceptance validation — live on the 3-board fleet (2026-06-13)
 
 First end-to-end run of the harness against real hardware (driven phase-by-phase).
