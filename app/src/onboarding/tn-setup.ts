@@ -39,7 +39,73 @@ export async function fetchDoctor(url = '/api/v1/setup/doctor'): Promise<DoctorR
   return { ok: !!j?.ok, checks };
 }
 
-// Used in ?mock (serverless demos) so the prepare step still has content.
+// ── scan / flash / provision (the hardware steps) ─────────────────────────────
+
+export interface ScanPort {
+  path: string;
+  chip: string | null;
+  flashSize: string | null;
+  mac: string | null;
+  ok: boolean;
+  error: string | null;
+}
+
+export async function scanPorts(url = '/api/v1/setup/scan'): Promise<ScanPort[]> {
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`scan ${res.status}`);
+  const j: any = await res.json();
+  return (Array.isArray(j?.ports) ? j.ports : []).map((p: any) => ({
+    path: String(p?.path ?? ''),
+    chip: p?.chip ?? null,
+    flashSize: p?.flash_size ?? null,
+    mac: p?.mac ?? null,
+    ok: !!p?.ok,
+    error: p?.error ?? null,
+  }));
+}
+
+export interface FlashResult {
+  success: boolean;
+  port?: string;
+  elapsedS?: number;
+  error?: string;
+}
+
+export async function flashBoard(port: string, url = '/api/v1/setup/flash'): Promise<FlashResult> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ port }),
+  });
+  const j: any = await res.json().catch(() => ({}));
+  return { success: !!j?.success, port: j?.port, elapsedS: j?.elapsed_s, error: j?.error };
+}
+
+export interface ProvisionResult {
+  success: boolean;
+  role?: string | null;
+  nodeId?: number | null;
+  error?: string;
+}
+
+export async function provisionBoard(
+  req: { port: string; ssid?: string; password?: string },
+  url = '/api/v1/setup/provision',
+): Promise<ProvisionResult> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(req),
+  });
+  const j: any = await res.json().catch(() => ({}));
+  return { success: !!j?.success, role: j?.role ?? null, nodeId: j?.node_id ?? null, error: j?.error };
+}
+
+// Used in ?mock (serverless demos) so the steps still have content.
+export const MOCK_SCAN: ScanPort[] = [
+  { path: '/dev/ttyACM0', chip: 'ESP32-S3', flashSize: '16MB', mac: '3c:0f:02:d7:4a:60', ok: true, error: null },
+];
+
 export const MOCK_DOCTOR: DoctorReport = {
   ok: true,
   checks: [

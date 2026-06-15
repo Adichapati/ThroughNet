@@ -6,7 +6,13 @@
 import { LitElement, html, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { createTear, type TearHandle } from './tn-tear';
-import { fetchDoctor, MOCK_DOCTOR, type DoctorCheck, type DoctorReport } from './tn-setup';
+import {
+  fetchDoctor, MOCK_DOCTOR, MOCK_SCAN, scanPorts, flashBoard, provisionBoard,
+  type DoctorCheck, type DoctorReport, type ScanPort, type ProvisionResult,
+} from './tn-setup';
+
+const isMock = () => new URLSearchParams(location.search).has('mock');
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const STEPS = ['prepare', 'flash', 'connect', 'place', 'calibrate', 'done'];
 
@@ -33,6 +39,19 @@ export class TnOnboarding extends LitElement {
   @state() private doctor?: DoctorReport;
   @state() private doctorLoading = false;
   @state() private doctorError = false;
+  // A3 flash step (real /api/v1/setup/scan + /flash).
+  @state() private scan?: ScanPort[];
+  @state() private scanning = false;
+  @state() private flashing = false;
+  @state() private flashed = false;
+  @state() private flashError?: string;
+  private port?: string;
+  // A3 connect step (real /api/v1/setup/provision).
+  @state() private ssid = '';
+  @state() private password = '';
+  @state() private provisioning = false;
+  @state() private provisioned?: ProvisionResult;
+  @state() private provError?: string;
   private tear?: TearHandle;
   private handTimer?: ReturnType<typeof setTimeout>;
 
@@ -44,6 +63,7 @@ export class TnOnboarding extends LitElement {
     if (jump !== null) {                              // dev: skip the cover to a step
       this.step = Math.max(0, Math.min(5, parseInt(jump, 10) || 0));
       this.coverGone = true;
+      this.onEnterStep();
       return;
     }
     const canvas = this.q('.tear-canvas') as HTMLCanvasElement | null;
@@ -60,9 +80,51 @@ export class TnOnboarding extends LitElement {
   private hideHand() { this.handVisible = false; clearTimeout(this.handTimer); }
   private beginClick() { this.hideHand(); this.tear?.begin(); }
 
-  private next() { if (this.step < 5) this.step += 1; else this.finish(); }
-  private back() { if (this.step > 0) this.step -= 1; }
+  private next() {
+    if (this.step < 5) { this.step += 1; this.onEnterStep(); }
+    else this.finish();
+  }
+  private back() { if (this.step > 0) { this.step -= 1; this.onEnterStep(); } }
   private finish() { this.dispatchEvent(new CustomEvent('finish', { bubbles: true, composed: true })); }
+
+  // Kick off the work a step needs when it first becomes visible.
+  private onEnterStep() {
+    if (this.step === 1 && !this.scan && !this.scanning) this.doScan();
+  }
+
+  private async doScan() {
+    this.scanning = true; this.flashError = undefined;
+    try {
+      const ports = isMock() ? (await sleep(400), MOCK_SCAN) : await scanPorts();
+      this.scan = ports;
+      this.port = ports.find((p) => p.ok)?.path ?? ports[0]?.path;
+    } catch { this.scan = []; this.port = undefined; }
+    finally { this.scanning = false; }
+  }
+
+  private async doFlash() {
+    if (!this.port) return;
+    this.flashing = true; this.flashError = undefined; this.flashed = false;
+    try {
+      const r = isMock() ? (await sleep(1200), { success: true }) : await flashBoard(this.port);
+      if (r.success) this.flashed = true;
+      else this.flashError = r.error || 'flash failed';
+    } catch (e) { this.flashError = String(e); }
+    finally { this.flashing = false; }
+  }
+
+  private async doProvision() {
+    if (!this.port) { this.provError = 'no board — flash one first'; return; }
+    this.provisioning = true; this.provError = undefined; this.provisioned = undefined;
+    try {
+      const r = isMock()
+        ? (await sleep(1200), { success: true, role: 'rx', nodeId: 3 })
+        : await provisionBoard({ port: this.port, ssid: this.ssid, password: this.password });
+      if (r.success) this.provisioned = r;
+      else this.provError = r.error || 'provision failed';
+    } catch (e) { this.provError = String(e); }
+    finally { this.provisioning = false; }
+  }
 
   // Run (or re-run) the host preflight. ?mock keeps it serverless for demos.
   private async runDoctor() {
@@ -170,31 +232,55 @@ export class TnOnboarding extends LitElement {
       <line x1="34" y1="46" x2="46" y2="46" stroke="#2B2A26" stroke-width="1.2"/>
       <line x1="34" y1="52" x2="46" y2="52" stroke="#2B2A26" stroke-width="1.2"/>
       <path d="M40 66 L40 74 M33 74 L47 74" stroke="#2B2A26" stroke-width="1.6"/></svg>`;
+    const detected = this.scan?.find((p) => p.path === this.port);
+    let status;
+    if (this.scanning) {
+      status = html`<code class="cmd">scanning for boards…</code>`;
+    } else if (detected) {
+      status = html`<code class="cmd">detected · ${detected.path} · ${detected.chip ?? 'unknown'}${detected.flashSize ? ` (${detected.flashSize})` : ''}</code>`;
+    } else {
+      status = html`<code class="cmd">no board found — plug an ESP32-S3 in via USB</code>`;
+    }
+    const cta = this.flashing ? 'flashing…' : this.flashed ? 'flashed ✓' : 'flash firmware';
     return html`<div class="card">${this.header('flash')}
       <div class="card-body">
         <div class="vignette">${board}</div>
         <div>
           <h3>Add your first node</h3>
           <p>Plug an ESP32-S3 into this computer with a USB cable. ThroughNet flashes the sensing firmware — the first board becomes your TX illuminator.</p>
-          <div style="margin-bottom:16px"><code class="cmd">detected · /dev/ttyACM0 · ESP32-S3 (8 MB)</code></div>
-          ${this.nav('flash firmware')}
+          <div style="margin-bottom:14px">${status}</div>
+          ${this.flashError ? html`<div class="check fail" style="margin-bottom:12px"><span class="mk">✕</span><div><div class="lbl">flash failed</div><div class="sub">${this.flashError}</div></div></div>` : ''}
+          <div class="actions">
+            <button class="btn ghost" @click=${this.back}>back</button>
+            <button class="btn ghost" @click=${this.doScan} ?disabled=${this.scanning || this.flashing}>rescan</button>
+            <span class="spacer"></span>
+            ${this.flashed
+              ? html`<button class="btn cta" @click=${this.next}>continue ▸</button>`
+              : html`<button class="btn cta" @click=${this.doFlash} ?disabled=${!this.port || this.flashing}>${cta}</button>`}
+          </div>
         </div>
       </div></div>`;
   }
 
   private stepConnect() {
+    const p = this.provisioned;
+    const role = p?.role ?? null;
+    const cta = this.provisioning ? 'provisioning…' : p ? 'provisioned ✓' : 'connect';
     return html`<div class="card">${this.header('connect')}
       <div class="card-body wide">
         <h3>Connect it to Wi-Fi</h3>
-        <p>Enter your network once — every node reuses it. ThroughNet assigns roles automatically: the first board is the TX illuminator, the rest are RX, locked to the TX.</p>
-        <div class="field"><label>wi-fi network</label><select><option>home-2.4ghz</option><option>workshop-iot</option></select></div>
-        <div class="field"><label>password</label><input type="password" value="············"></div>
-        <div class="fleet">
-          <div class="nd"><span class="gem tx"></span> node 2 <span class="role">tx · illuminator</span> <span class="spacer"></span><code class="cmd">streaming ✓</code></div>
-          <div class="nd"><span class="gem rx"></span> node 3 <span class="role">rx</span> <span class="spacer"></span><code class="cmd">streaming ✓</code></div>
-          <div class="nd" style="opacity:.5"><span class="gem rx"></span> add a third node <span class="role">rx</span> <span class="spacer"></span><code class="cmd">need 1 tx + 2 rx</code></div>
+        <p>Enter your network once — every node reuses it. ThroughNet assigns roles automatically: the first board is the TX illuminator, the rest are RX, locked to the TX. (A board already on record keeps its saved network.)</p>
+        <div class="field"><label>wi-fi network</label><input type="text" placeholder="your 2.4 GHz network" .value=${this.ssid} @input=${(e: Event) => (this.ssid = (e.target as HTMLInputElement).value)}></div>
+        <div class="field"><label>password</label><input type="password" placeholder="leave blank to reuse saved" .value=${this.password} @input=${(e: Event) => (this.password = (e.target as HTMLInputElement).value)}></div>
+        ${this.provError ? html`<div class="check fail" style="margin:4px 0 12px"><span class="mk">✕</span><div><div class="lbl">provision failed</div><div class="sub">${this.provError}</div></div></div>` : ''}
+        ${p ? html`<div class="fleet"><div class="nd"><span class="gem ${role === 'tx' ? 'tx' : 'rx'}"></span> node ${p.nodeId ?? '?'} <span class="role">${role ?? 'rx'}${role === 'tx' ? ' · illuminator' : ''}</span> <span class="spacer"></span><code class="cmd">provisioned ✓</code></div></div>` : ''}
+        <div class="actions">
+          <button class="btn ghost" @click=${this.back}>back</button>
+          <span class="spacer"></span>
+          ${p
+            ? html`<button class="btn cta" @click=${this.next}>continue ▸</button>`
+            : html`<button class="btn cta" @click=${this.doProvision} ?disabled=${this.provisioning || !this.port}>${cta}</button>`}
         </div>
-        ${this.nav('connect')}
       </div></div>`;
   }
 

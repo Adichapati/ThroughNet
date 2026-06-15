@@ -4859,9 +4859,367 @@ async fn setup_doctor(State(state): State<SharedState>) -> Json<serde_json::Valu
     Json(serde_json::json!({ "ok": ok, "checks": checks }))
 }
 
+// ── ADR-151 A3: in-app setup — scan / flash / provision (hardware path) ───────
+// These drive our *proven* tools as subprocesses (esptool + `provision.py
+// --auto`, the live-bring-up path) — ADR-151's "start with subprocess, port to
+// espflash/Rust in A4" decision. Localhost-only (HTTP binds 127.0.0.1); every
+// board op needs an ESP32 on USB. Paths resolve from env with repo-relative
+// defaults so a dev `cargo run` from the repo root works out of the box; A4
+// packaging bundles the firmware + a Python-free flasher. ESP32-S3 (8/16 MB)
+// is the supported target here (the verified default); other chips: A4.
+
+/// ESP32-S3 flash layout for the bundled ThroughNet firmware (README §0;
+/// matches `partitions_display.csv`). `(offset, filename)`.
+const S3_FLASH_LAYOUT: [(&str, &str); 4] = [
+    ("0x0", "bootloader.bin"),
+    ("0x8000", "partition-table.bin"),
+    ("0xf000", "ota_data_initial.bin"),
+    ("0x20000", "esp32-csi-node.bin"),
+];
+
+/// Resolved locations the setup endpoints shell out to.
+struct SetupPaths {
+    python: String,
+    firmware_dir: PathBuf,
+    provision_py: PathBuf,
+}
+
+fn setup_paths() -> SetupPaths {
+    let python = std::env::var("THROUGHNET_SETUP_PYTHON").ok().unwrap_or_else(|| {
+        for cand in [".venv/bin/python", "venv/bin/python"] {
+            if std::path::Path::new(cand).exists() {
+                return cand.to_string();
+            }
+        }
+        "python3".to_string()
+    });
+    let firmware_dir = std::env::var("THROUGHNET_FIRMWARE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from("firmware/esp32-csi-node/release_bins/throughnet-s3-nodisp")
+        });
+    let provision_py = std::env::var("THROUGHNET_PROVISION_PY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("firmware/esp32-csi-node/provision.py"));
+    SetupPaths {
+        python,
+        firmware_dir,
+        provision_py,
+    }
+}
+
+/// String-shape guard against path injection in a `port` parameter (pure, so
+/// it's unit-testable without a device present).
+fn serial_port_shape_ok(p: &str) -> bool {
+    (p.starts_with("/dev/tty") || p.starts_with("/dev/cu.")) && !p.contains("..") && !p.contains('\0')
+}
+
+/// A setup `port` must be well-shaped *and* an existing device node.
+fn valid_serial_port(p: &str) -> bool {
+    serial_port_shape_ok(p) && std::path::Path::new(p).exists()
+}
+
+fn list_serial_ports() -> Vec<String> {
+    let mut devs = Vec::new();
+    if let Ok(rd) = std::fs::read_dir("/dev") {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("ttyACM") || name.starts_with("ttyUSB") {
+                devs.push(format!("/dev/{name}"));
+            }
+        }
+    }
+    devs.sort();
+    devs
+}
+
+/// Pull (chip, flash_size, mac) out of `esptool flash_id` output.
+fn parse_flash_id(out: &str) -> (Option<String>, Option<String>, Option<String>) {
+    let (mut chip, mut size, mut mac) = (None, None, None);
+    for line in out.lines() {
+        let l = line.trim();
+        if chip.is_none() {
+            if let Some(rest) = l.strip_prefix("Chip is ") {
+                chip = Some(rest.split_whitespace().next().unwrap_or(rest).to_string());
+            } else if let Some(rest) = l.strip_prefix("Detecting chip type...") {
+                let r = rest.trim();
+                if !r.is_empty() && r.starts_with("ESP") {
+                    chip = Some(r.to_string());
+                }
+            }
+        }
+        if size.is_none() {
+            if let Some(rest) = l.strip_prefix("Detected flash size:") {
+                size = Some(rest.trim().to_string());
+            }
+        }
+        if mac.is_none() {
+            if let Some(rest) = l.strip_prefix("MAC:") {
+                mac = Some(rest.trim().to_string());
+            }
+        }
+    }
+    (chip, size, mac)
+}
+
+/// Best outbound LAN IPv4 (the UDP-connect trick — no packets are sent). Used as
+/// the `provision.py --target-ip` fallback; mDNS (R1) is the primary path.
+fn detect_lan_ip() -> Option<String> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("8.8.8.8:80").ok()?;
+    sock.local_addr().ok().map(|a| a.ip().to_string())
+}
+
+/// Where `provision.py` stores per-port state — mirror of its `_state_path_for`
+/// (`$XDG_CONFIG_HOME|~/.config / wifi-densepose / esp32-provision-state /
+/// <sanitized-port>.json`), so the endpoint can read back the final role/node.
+fn provision_state_path(port: &str) -> Option<PathBuf> {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".config")))?;
+    let sanitized: String = port
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    Some(
+        base.join("wifi-densepose")
+            .join("esp32-provision-state")
+            .join(format!("{sanitized}.json")),
+    )
+}
+
+/// GET /api/v1/setup/scan — list USB serial ports and probe each for chip/flash.
+async fn setup_scan() -> Json<serde_json::Value> {
+    let paths = setup_paths();
+    let mut ports = Vec::new();
+    for path in list_serial_ports() {
+        let probe = tokio::time::timeout(
+            std::time::Duration::from_secs(25),
+            tokio::process::Command::new(&paths.python)
+                .args(["-m", "esptool", "--port", &path, "flash_id"])
+                .output(),
+        )
+        .await;
+        match probe {
+            Ok(Ok(o)) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+                let (chip, size, mac) = parse_flash_id(&combined);
+                let ok = chip.is_some();
+                ports.push(serde_json::json!({
+                    "path": path,
+                    "chip": chip,
+                    "flash_size": size,
+                    "mac": mac,
+                    "ok": ok,
+                    "error": if ok { serde_json::Value::Null }
+                             else { serde_json::json!("couldn't identify chip — board busy or not responding?") },
+                }));
+            }
+            Ok(Err(e)) => ports.push(serde_json::json!({
+                "path": path, "ok": false, "error": format!("esptool failed to launch: {e}")
+            })),
+            Err(_) => ports.push(serde_json::json!({
+                "path": path, "ok": false, "error": "chip probe timed out (25 s)"
+            })),
+        }
+    }
+    Json(serde_json::json!({ "ports": ports }))
+}
+
+#[derive(Debug, Deserialize)]
+struct FlashReq {
+    port: String,
+    #[serde(default)]
+    baud: Option<u32>,
+}
+
+/// POST /api/v1/setup/flash — write the bundled ThroughNet S3 firmware to `port`.
+/// Synchronous (~15-30 s); progress streaming over WS is an A4 polish item.
+async fn setup_flash(Json(req): Json<FlashReq>) -> (StatusCode, Json<serde_json::Value>) {
+    if !valid_serial_port(&req.port) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "success": false, "error": format!("not a serial device: {}", req.port) })),
+        );
+    }
+    let paths = setup_paths();
+    for (_, name) in S3_FLASH_LAYOUT {
+        if !paths.firmware_dir.join(name).exists() {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": format!("firmware binary missing: {}", paths.firmware_dir.join(name).display()),
+                })),
+            );
+        }
+    }
+    let baud = req.baud.unwrap_or(460800).to_string();
+    let mut cmd = tokio::process::Command::new(&paths.python);
+    cmd.args([
+        "-m", "esptool", "--chip", "esp32s3", "--port", &req.port, "--baud", &baud,
+        "write_flash", "--flash_mode", "dio", "--flash_size", "8MB",
+    ]);
+    for (off, name) in S3_FLASH_LAYOUT {
+        cmd.arg(off);
+        cmd.arg(paths.firmware_dir.join(name));
+    }
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(std::time::Duration::from_secs(240), cmd.output()).await {
+        Ok(Ok(o)) => {
+            let log = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            let success = o.status.success() && log.contains("Hash of data verified");
+            let code = if success { StatusCode::OK } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({
+                "success": success,
+                "port": req.port,
+                "elapsed_s": started.elapsed().as_secs(),
+                "log": log,
+            })))
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "success": false, "error": format!("esptool failed to launch: {e}") })),
+        ),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({ "success": false, "error": "flash timed out (240 s)" })),
+        ),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ProvisionReq {
+    port: String,
+    #[serde(default)]
+    ssid: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    target_ip: Option<String>,
+}
+
+/// POST /api/v1/setup/provision — `provision.py --auto` (fleet auto-id: first
+/// board = TX illuminator, later boards = RX locked to the TX MAC). Omitted
+/// ssid/password merge from the board's prior per-port state (re-provisioning a
+/// known board needs no creds); target_ip defaults to the host LAN IP (mDNS is
+/// primary). Reports the final role/node_id read back from the state file.
+async fn setup_provision(Json(req): Json<ProvisionReq>) -> (StatusCode, Json<serde_json::Value>) {
+    if !valid_serial_port(&req.port) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "success": false, "error": format!("not a serial device: {}", req.port) })),
+        );
+    }
+    let paths = setup_paths();
+    let mut cmd = tokio::process::Command::new(&paths.python);
+    cmd.arg(&paths.provision_py).arg("--auto").args(["--port", &req.port]);
+    if let Some(s) = req.ssid.as_deref().filter(|s| !s.is_empty()) {
+        cmd.args(["--ssid", s]);
+    }
+    if let Some(p) = req.password.as_deref().filter(|s| !s.is_empty()) {
+        cmd.args(["--password", p]);
+    }
+    // target_ip is the mDNS *fallback* (R1 is primary). Respect a board's stored
+    // value: only set it from a request value, or auto-detect for a *new* board
+    // (no prior per-port state) — never clobber a known board's stored target_ip.
+    let has_prior_state = provision_state_path(&req.port).map(|p| p.exists()).unwrap_or(false);
+    let target_ip = req
+        .target_ip
+        .filter(|s| !s.is_empty())
+        .or_else(|| if has_prior_state { None } else { detect_lan_ip() });
+    if let Some(ip) = target_ip.as_deref() {
+        cmd.args(["--target-ip", ip]);
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await {
+        Ok(Ok(o)) => {
+            let log = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            let success = o.status.success();
+            // Read the final identity back from the state file provision.py wrote.
+            let (role, node_id) = provision_state_path(&req.port)
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .map(|v| {
+                    (
+                        v.get("role").and_then(|x| x.as_str()).map(String::from),
+                        v.get("node_id").and_then(|x| x.as_u64()),
+                    )
+                })
+                .unwrap_or((None, None));
+            let code = if success { StatusCode::OK } else { StatusCode::INTERNAL_SERVER_ERROR };
+            (code, Json(serde_json::json!({
+                "success": success,
+                "port": req.port,
+                "role": role,
+                "node_id": node_id,
+                "log": log,
+            })))
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "success": false, "error": format!("provision.py failed to launch: {e}") })),
+        ),
+        Err(_) => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(serde_json::json!({ "success": false, "error": "provision timed out (120 s)" })),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod doctor_tests {
-    use super::{doctor_check, doctor_csi_check};
+    use super::{
+        doctor_check, doctor_csi_check, parse_flash_id, provision_state_path, serial_port_shape_ok,
+    };
+
+    #[test]
+    fn flash_id_parse_pulls_chip_size_mac() {
+        let out = "esptool v5.3.0\nDetecting chip type... ESP32-S3\nMAC:                3c:0f:02:d7:4a:60\nDetected flash size: 16MB\n";
+        let (chip, size, mac) = parse_flash_id(out);
+        assert_eq!(chip.as_deref(), Some("ESP32-S3"));
+        assert_eq!(size.as_deref(), Some("16MB"));
+        assert_eq!(mac.as_deref(), Some("3c:0f:02:d7:4a:60"));
+        // "Chip is ESP32-S3 (QFN56)..." form keeps just the chip token
+        let (chip2, _, _) = parse_flash_id("Chip is ESP32-S3 (QFN56) (revision v0.2)");
+        assert_eq!(chip2.as_deref(), Some("ESP32-S3"));
+        // nothing recognizable -> all None
+        assert_eq!(parse_flash_id("garbage\nlines"), (None, None, None));
+    }
+
+    #[test]
+    fn serial_port_shape_rejects_injection() {
+        assert!(serial_port_shape_ok("/dev/ttyACM0"));
+        assert!(serial_port_shape_ok("/dev/ttyUSB1"));
+        assert!(!serial_port_shape_ok("/etc/passwd"));
+        assert!(!serial_port_shape_ok("/dev/tty../../x")); // path traversal rejected
+        // No shell is used (argv, not a command string), so a "shell-ish" path is
+        // harmless: shape allows it, and the exists() gate in valid_serial_port
+        // rejects it because no such device node exists.
+        assert!(serial_port_shape_ok("/dev/ttyACM0;reboot"));
+        assert!(!super::valid_serial_port("/dev/ttyACM0;reboot"));
+    }
+
+    #[test]
+    fn provision_state_path_sanitizes_port() {
+        std::env::set_var("XDG_CONFIG_HOME", "/tmp/tn-xdg");
+        let p = provision_state_path("/dev/ttyACM0").unwrap();
+        assert!(p.ends_with("wifi-densepose/esp32-provision-state/_dev_ttyACM0.json"));
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
 
     #[test]
     fn csi_check_maps_ingest_state_to_status() {
@@ -7431,8 +7789,13 @@ async fn main() {
         .route("/api/v1/throughnet/baseline/start", post(throughnet_baseline_start))
         .route("/api/v1/throughnet/baseline/stop", post(throughnet_baseline_stop))
         .route("/api/v1/throughnet/status", get(throughnet_status))
-        // ADR-151 A3: in-app setup — host preflight (localhost-only, read-only).
+        // ADR-151 A3: in-app setup (localhost-only). doctor = read-only host
+        // preflight; scan/flash/provision drive esptool + provision.py on a
+        // board over USB.
         .route("/api/v1/setup/doctor", get(setup_doctor))
+        .route("/api/v1/setup/scan", get(setup_scan))
+        .route("/api/v1/setup/flash", post(setup_flash))
+        .route("/api/v1/setup/provision", post(setup_provision))
         // ADR-044 §5.3: runtime-configurable dedup factor
         .route(
             "/api/v1/config/dedup-factor",

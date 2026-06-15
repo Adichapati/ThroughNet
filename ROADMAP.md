@@ -342,12 +342,13 @@ UI. See **Phase R** above. Current front:*
    per-node `stale`, RSSI + CSI packet rate), home overlay cards, and Nodes/Events/Settings screens
    are landed, and the onboarding cover was upgraded to a **draggable WebGL paper tear**. **A2 done**:
    the UI is embedded into the `sensing-server` binary (`rust-embed`, opt-in `embed-ui` feature) +
-   an app-mode launcher (`scripts/throughnet-app.sh`). **A3 (no-hardware half) done**: the real
-   localhost `GET /api/v1/setup/doctor` host preflight (serial-group / `ufw` 5005+5353 / CSI-ingest,
-   each with a copy-paste fix, honest about non-root) now drives the onboarding **prepare** step
-   (data-driven, with re-check); verified end-to-end on this box through the Vite proxy. **A3 hardware
-   gate** remaining: `/api/v1/setup/{scan,flash,provision}` (board probe + `espflash` flash +
-   `provision.py --auto`) need an ESP32 on USB. Then **A4** single-binary packaging (ADR-151 §7).
+   an app-mode launcher (`scripts/throughnet-app.sh`). **A3 DONE** (2026-06-15): `GET /api/v1/setup/doctor`
+   (real serial-group / `ufw` 5005+5353 / CSI-ingest preflight, copy-paste fixes, honest about non-root)
+   drives the **prepare** step, and `/api/v1/setup/{scan,flash,provision}` (esptool probe + bundled-firmware
+   flash + `provision.py --auto`, subprocess-driven per ADR-151; espflash/Rust port deferred to A4) drive the
+   **flash** + **connect** steps. **Verified end-to-end on a live ESP32-S3** — scan→flash→provision via curl
+   *and* clicked through the app UI (Vite proxy → server → board); board restored to node 3 RX, streaming
+   (`csi_fps≈137`), doctor `csi_ingest` → ok. Next: **A4** single-binary packaging (ADR-151 §7).
    Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
