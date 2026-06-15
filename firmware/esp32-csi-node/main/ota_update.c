@@ -23,8 +23,13 @@ static const char *TAG = "ota_update";
 /** OTA HTTP server port. */
 #define OTA_PORT 8032
 
-/** Maximum firmware size (900 KB — matches CI binary size gate). */
-#define OTA_MAX_SIZE (900 * 1024)
+/** Maximum accepted OTA image size. The ota_0/ota_1 partitions are 2 MB each
+ *  (partitions_display.csv), so this only needs to stay safely under that. The
+ *  old 900 KB value was an arbitrary CI gate that the real image (~944 KB after
+ *  an ESP-IDF component bump) now exceeds — a too-small limit made the node 400
+ *  and reset the connection before reading the body (observed as ECONNRESET on
+ *  the host). 1.5 MB leaves generous headroom for the image to grow. */
+#define OTA_MAX_SIZE (1536 * 1024)
 
 /** NVS namespace and key for the OTA pre-shared key. */
 #define OTA_NVS_NAMESPACE "security"
@@ -217,6 +222,12 @@ static esp_err_t ota_start_server(httpd_handle_t *out_handle)
     config.max_uri_handlers = 12;  /* Extra slots for WASM endpoints (ADR-040). */
     /* Increase receive timeout for large uploads. */
     config.recv_wait_timeout = 30;
+    /* The OTA upload handler holds a 1 KB receive buffer on the stack and calls
+     * esp_ota_write(), whose flash-driver path is deep. The httpd task's default
+     * 4 KB stack overflows mid-upload (observed: panic "stack overflow in task
+     * httpd" at ~93% of a 900 KB image, before the A/B flip — so the partition
+     * never switched and the host saw a dropped connection). Double it. */
+    config.stack_size = 8192;
 
     httpd_handle_t server = NULL;
     esp_err_t err = httpd_start(&server, &config);
