@@ -7,8 +7,10 @@ import { LitElement, html, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { createTear, type TearHandle } from './tn-tear';
 import {
-  fetchDoctor, MOCK_DOCTOR, MOCK_SCAN, scanPorts, flashBoard, provisionBoard,
-  type DoctorCheck, type DoctorReport, type ScanPort, type ProvisionResult,
+  fetchDoctor, MOCK_DOCTOR, flashBoard, provisionBoard,
+  fetchFleet, MOCK_FLEET,
+  type DoctorCheck, type DoctorReport, type ProvisionResult,
+  type FleetReport, type FleetDevice,
 } from './tn-setup';
 
 const isMock = () => new URLSearchParams(location.search).has('mock');
@@ -39,13 +41,17 @@ export class TnOnboarding extends LitElement {
   @state() private doctor?: DoctorReport;
   @state() private doctorLoading = false;
   @state() private doctorError = false;
-  // A3 flash step (real /api/v1/setup/scan + /flash).
-  @state() private scan?: ScanPort[];
+  // A3 flash step (real /api/v1/setup/fleet?scan + /flash).
   @state() private scanning = false;
   @state() private flashing = false;
   @state() private flashed = false;
   @state() private flashError?: string;
   private port?: string;
+  // Fleet reconciler (state ∪ live) — drives "already set up, skip it" so we
+  // never tell the user to re-flash a working board, and guards the TX.
+  @state() private fleet?: FleetReport;
+  @state() private addingNode = false;    // user chose to add a node to a healthy fleet
+  @state() private reflashConfirm = false; // user opted into re-flashing a known board
   // A3 connect step (real /api/v1/setup/provision).
   @state() private ssid = '';
   @state() private password = '';
@@ -59,6 +65,7 @@ export class TnOnboarding extends LitElement {
 
   firstUpdated() {
     this.runDoctor();                                 // preflight ready by the time prepare shows
+    this.loadFleet();                                 // know if the fleet's already up before the tear opens
     const jump = new URLSearchParams(location.search).get('onbStep');
     if (jump !== null) {                              // dev: skip the cover to a step
       this.step = Math.max(0, Math.min(5, parseInt(jump, 10) || 0));
@@ -89,18 +96,44 @@ export class TnOnboarding extends LitElement {
 
   // Kick off the work a step needs when it first becomes visible.
   private onEnterStep() {
-    if (this.step === 1 && !this.scan && !this.scanning) this.doScan();
+    if (this.step === 1 && !this.scanning) this.doScan();
   }
 
+  // The flash step's scan now goes through the reconciler (scan + state + live)
+  // so we learn whether the plugged-in board is already set up — not just that
+  // a chip is present.
   private async doScan() {
-    this.scanning = true; this.flashError = undefined;
+    this.scanning = true; this.flashError = undefined; this.reflashConfirm = false;
     try {
-      const ports = isMock() ? (await sleep(400), MOCK_SCAN) : await scanPorts();
-      this.scan = ports;
-      this.port = ports.find((p) => p.ok)?.path ?? ports[0]?.path;
-    } catch { this.scan = []; this.port = undefined; }
+      if (isMock()) {
+        await sleep(500); this.fleet = MOCK_FLEET;
+      } else {
+        this.fleet = await fetchFleet(true);   // ?scan=true: probe USB + reconcile
+      }
+      this.port = this.presentDevice()?.port ?? undefined;
+    } catch { this.fleet = undefined; this.port = undefined; }
     finally { this.scanning = false; }
   }
+
+  // Reconcile the whole fleet (fast: state ∪ live, no USB probe). Failure leaves
+  // `fleet` undefined so onboarding falls back to the plain first-run flow.
+  private async loadFleet(scan = false) {
+    if (isMock()) { this.fleet = MOCK_FLEET; return; }
+    try { this.fleet = await fetchFleet(scan); } catch { /* fall back to wizard */ }
+  }
+
+  // The board plugged in right now (the one any flash/provision acts on).
+  private presentDevice(): FleetDevice | undefined {
+    return this.fleet?.devices.find((d) => d.present);
+  }
+
+  // Skip onboarding entirely when the mesh is already up (and the user hasn't
+  // explicitly chosen to add another node).
+  private get fleetHealthy(): boolean {
+    return !!this.fleet?.summary.healthy && !this.addingNode;
+  }
+
+  private addNode() { this.addingNode = true; this.step = 1; this.onEnterStep(); }
 
   private async doFlash() {
     if (!this.port) return;
@@ -138,16 +171,48 @@ export class TnOnboarding extends LitElement {
   }
 
   render() {
+    // Already-set-up short-circuit: a healthy fleet skips the whole wizard (and
+    // its step rail) so re-opening setup never demands a pointless re-flash.
+    const shortCircuit = this.coverGone && this.fleetHealthy;
     return html`
       <div class="tn-frame"><i></i></div>
       <section class="wizard">
         <div class="wiz-col">
-          ${this.renderRail()}
-          ${this.renderStep()}
+          ${shortCircuit ? '' : this.renderRail()}
+          ${shortCircuit ? this.renderAlreadySetUp() : this.renderStep()}
         </div>
       </section>
       ${this.coverGone ? '' : this.renderCover()}
     `;
+  }
+
+  private renderFleetRow(d: FleetDevice) {
+    const tx = d.role === 'tx';
+    const status = d.online ? `${Math.round(d.csiFps ?? 0)} fps` : 'offline';
+    return html`<div class="nd">
+      <span class="gem ${tx ? 'tx' : 'rx'}"></span> node ${d.nodeId ?? '?'}
+      <span class="role">${d.role ?? 'rx'}${tx ? ' · illuminator' : ''}</span>
+      <span class="spacer"></span>
+      <code class="cmd ${d.online ? '' : 'off'}">${status}</code>
+    </div>`;
+  }
+
+  private renderAlreadySetUp() {
+    const s = this.fleet!.summary;
+    const known = this.fleet!.devices.filter((d) => d.provisioned);
+    return html`<div class="card">
+      <h2>set up · ready</h2>
+      <div class="card-body wide" style="text-align:center; justify-items:center;">
+        ${emblem('big-emblem')}
+        <h3 style="margin-top:14px">Your fleet's already set up</h3>
+        <p>${s.txOnline} illuminator · ${s.rxOnline} receiver${s.rxOnline === 1 ? '' : 's'} online —
+           ThroughNet is sensing. No need to flash anything again.</p>
+        ${known.length ? html`<div class="fleet" style="width:100%">${known.map((d) => this.renderFleetRow(d))}</div>` : ''}
+        <div class="actions" style="justify-content:center">
+          <button class="btn ghost" @click=${this.addNode}>add another node</button>
+          <button class="btn cta" @click=${this.finish}>enter throughnet ▸</button>
+        </div>
+      </div></div>`;
   }
 
   private renderRail() {
@@ -232,23 +297,64 @@ export class TnOnboarding extends LitElement {
       <line x1="34" y1="46" x2="46" y2="46" stroke="#2B2A26" stroke-width="1.2"/>
       <line x1="34" y1="52" x2="46" y2="52" stroke="#2B2A26" stroke-width="1.2"/>
       <path d="M40 66 L40 74 M33 74 L47 74" stroke="#2B2A26" stroke-width="1.6"/></svg>`;
-    const detected = this.scan?.find((p) => p.path === this.port);
+    const dev = this.presentDevice();
+    // "known" = the plugged-in board already has a provision state / is streaming.
+    // We must NOT silently re-flash it — that's exactly what broke the mesh.
+    const known = !!dev && dev.bucket !== 'unprovisioned';
+    const isTx = dev?.role === 'tx';
+    const heading = this.addingNode ? 'Add another node' : 'Add your first node';
+
     let status;
     if (this.scanning) {
       status = html`<code class="cmd">scanning for boards…</code>`;
-    } else if (detected) {
-      status = html`<code class="cmd">detected · ${detected.path} · ${detected.chip ?? 'unknown'}${detected.flashSize ? ` (${detected.flashSize})` : ''}</code>`;
+    } else if (dev) {
+      const id = dev.nodeId != null ? ` · node ${dev.nodeId} (${dev.role ?? 'rx'})` : '';
+      status = html`<code class="cmd">detected · ${dev.port ?? '?'} · ${dev.chip ?? 'unknown'}${dev.flashSize ? ` (${dev.flashSize})` : ''}${id}</code>`;
     } else {
       status = html`<code class="cmd">no board found — plug an ESP32-S3 in via USB</code>`;
     }
+
+    // TX guard: reflashing/rebooting the illuminator drops every RX at once.
+    const txWarn = isTx ? html`<div class="check warn" style="margin-bottom:12px"><span class="mk">!</span><div>
+      <div class="lbl">this board is your TX illuminator</div>
+      <div class="sub">Re-flashing it reboots the beacon — every receiver goes dark for ~20 s while it comes back. Only do this if you mean to; flash your RX nodes separately.</div></div></div>` : '';
+
+    // Already-set-up board: offer continue, with re-flash as a deliberate, guarded
+    // secondary action (the user's missing "I really do want to re-flash" path).
+    if (known && !this.flashed && !this.reflashConfirm) {
+      return html`<div class="card">${this.header('flash')}
+        <div class="card-body">
+          <div class="vignette">${board}</div>
+          <div>
+            <h3>${heading}</h3>
+            <div class="check ok" style="margin:2px 0 10px"><span class="mk">✓</span><div>
+              <div class="lbl">already set up — node ${dev!.nodeId ?? '?'} · ${dev!.role ?? 'rx'}${isTx ? ' · illuminator' : ''}</div>
+              <div class="sub">${dev!.online ? 'streaming now' : 'provisioned'} on ${dev!.ssid ?? 'your network'} — no flash needed.</div></div></div>
+            <div style="margin-bottom:12px">${status}</div>
+            ${txWarn}
+            <div class="actions">
+              <button class="btn ghost" @click=${this.back}>back</button>
+              <button class="btn ghost" @click=${this.doScan} ?disabled=${this.scanning}>rescan</button>
+              <button class="btn ghost" @click=${() => { this.reflashConfirm = true; }}>re-flash anyway</button>
+              <span class="spacer"></span>
+              <button class="btn cta" @click=${this.next}>continue ▸</button>
+            </div>
+          </div>
+        </div></div>`;
+    }
+
     const cta = this.flashing ? 'flashing…' : this.flashed ? 'flashed ✓' : 'flash firmware';
+    const blurb = this.addingNode
+      ? html`Plug the new ESP32-S3 in via USB. ThroughNet flashes the sensing firmware and adds it as an RX, locked to your existing TX.`
+      : html`Plug an ESP32-S3 into this computer with a USB cable. ThroughNet flashes the sensing firmware — the first board becomes your TX illuminator.`;
     return html`<div class="card">${this.header('flash')}
       <div class="card-body">
         <div class="vignette">${board}</div>
         <div>
-          <h3>Add your first node</h3>
-          <p>Plug an ESP32-S3 into this computer with a USB cable. ThroughNet flashes the sensing firmware — the first board becomes your TX illuminator.</p>
+          <h3>${heading}</h3>
+          <p>${blurb}</p>
           <div style="margin-bottom:14px">${status}</div>
+          ${this.reflashConfirm ? txWarn : ''}
           ${this.flashError ? html`<div class="check fail" style="margin-bottom:12px"><span class="mk">✕</span><div><div class="lbl">flash failed</div><div class="sub">${this.flashError}</div></div></div>` : ''}
           <div class="actions">
             <button class="btn ghost" @click=${this.back}>back</button>

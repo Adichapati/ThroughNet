@@ -108,6 +108,8 @@ tn-onboarding .check .lbl{ font-size:13px; }
 tn-onboarding .check .sub{ font-family:var(--f-mono); font-size:10px; color:var(--ink-soft); margin-top:2px; }
 tn-onboarding code.cmd{ font-family:var(--f-mono); font-size:11px; background:var(--paper-2);
   border:1px solid var(--edge); padding:2px 7px; color:var(--ink); }
+/* offline node status reads muted (vs a live fps) */
+tn-onboarding code.cmd.off{ color:var(--ink-soft); border-style:dashed; }
 
 /* fleet list + link rssi bars */
 tn-onboarding .fleet{ display:flex; flex-direction:column; gap:8px; margin:4px 0 16px; }

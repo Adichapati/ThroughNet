@@ -106,6 +106,92 @@ export const MOCK_SCAN: ScanPort[] = [
   { path: '/dev/ttyACM0', chip: 'ESP32-S3', flashSize: '16MB', mac: '3c:0f:02:d7:4a:60', ok: true, error: null },
 ];
 
+// ── fleet reconciler (state ∪ live) ───────────────────────────────────────────
+// The single source of truth for "what's already set up", so onboarding stops
+// telling users to re-flash working boards. JSON contract: sensing-server
+// setup_fleet — { summary: {known,online,tx_online,rx_online,healthy,scanned},
+//   devices: [{ node_id, role, bucket, present, online, port, chip, ... }] }.
+
+export type DeviceBucket = 'streaming' | 'provisioned' | 'unprovisioned';
+
+export interface FleetDevice {
+  nodeId: number | null;
+  role: string | null;       // 'tx' | 'rx' | 'legacy' | null
+  bucket: DeviceBucket;
+  provisioned: boolean;
+  present: boolean;          // plugged into this machine right now (needs ?scan)
+  online: boolean;           // streaming fresh CSI frames
+  port: string | null;
+  chip: string | null;
+  flashSize: string | null;
+  ssid: string | null;
+  rssiDbm: number | null;
+  csiFps: number | null;
+  lastSeenS: number | null;
+}
+
+export interface FleetSummary {
+  known: number;
+  online: number;
+  txOnline: number;
+  rxOnline: number;
+  healthy: boolean;          // ≥1 TX + ≥1 RX streaming
+  scanned: boolean;
+}
+
+export interface FleetReport {
+  summary: FleetSummary;
+  devices: FleetDevice[];
+}
+
+const BUCKETS: DeviceBucket[] = ['streaming', 'provisioned', 'unprovisioned'];
+
+export async function fetchFleet(scan = false, base = '/api/v1/setup/fleet'): Promise<FleetReport> {
+  const url = scan ? `${base}?scan=true` : base;
+  const res = await fetch(url, { headers: { accept: 'application/json' } });
+  if (!res.ok) throw new Error(`fleet ${res.status}`);
+  const j: any = await res.json();
+  const s = j?.summary ?? {};
+  const devices: FleetDevice[] = (Array.isArray(j?.devices) ? j.devices : []).map((d: any) => ({
+    nodeId: typeof d?.node_id === 'number' ? d.node_id : null,
+    role: d?.role ?? null,
+    bucket: (BUCKETS.includes(d?.bucket) ? d.bucket : 'unprovisioned') as DeviceBucket,
+    provisioned: !!d?.provisioned,
+    present: !!d?.present,
+    online: !!d?.online,
+    port: d?.port ?? null,
+    chip: d?.chip ?? null,
+    flashSize: d?.flash_size ?? null,
+    ssid: d?.ssid ?? null,
+    rssiDbm: typeof d?.rssi_dbm === 'number' ? d.rssi_dbm : null,
+    csiFps: typeof d?.csi_fps === 'number' ? d.csi_fps : null,
+    lastSeenS: typeof d?.last_seen_s === 'number' ? d.last_seen_s : null,
+  }));
+  return {
+    summary: {
+      known: Number(s?.known ?? 0),
+      online: Number(s?.online ?? 0),
+      txOnline: Number(s?.tx_online ?? 0),
+      rxOnline: Number(s?.rx_online ?? 0),
+      healthy: !!s?.healthy,
+      scanned: !!s?.scanned,
+    },
+    devices,
+  };
+}
+
+export const MOCK_FLEET: FleetReport = {
+  summary: { known: 3, online: 3, txOnline: 1, rxOnline: 2, healthy: true, scanned: true },
+  devices: [
+    { nodeId: 1, role: 'tx', bucket: 'streaming', provisioned: true, present: false, online: true,
+      port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: -48, csiFps: 132, lastSeenS: 0 },
+    { nodeId: 2, role: 'rx', bucket: 'streaming', provisioned: true, present: false, online: true,
+      port: null, chip: null, flashSize: null, ssid: 'KANAYAM', rssiDbm: -55, csiFps: 130, lastSeenS: 1 },
+    { nodeId: 3, role: 'rx', bucket: 'streaming', provisioned: true, present: true, online: true,
+      port: '/dev/ttyACM0', chip: 'ESP32-S3', flashSize: '16MB', ssid: 'KANAYAM', rssiDbm: -52, csiFps: 137, lastSeenS: 0 },
+  ],
+};
+
 export const MOCK_DOCTOR: DoctorReport = {
   ok: true,
   checks: [
