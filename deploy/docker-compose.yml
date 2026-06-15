@@ -1,0 +1,29 @@
+# ThroughNet — always-on, single self-contained sensing server (ADR-151 A4).
+# Runs an already-set-up fleet headless; the dashboard is on http://HOST:8080/.
+#
+#   cd deploy && docker compose up -d --build
+#
+# Open the host firewall for CSI ingest (the live-bring-up #1 gotcha):
+#   sudo ufw allow 5005/udp && sudo ufw allow 5353/udp
+services:
+  throughnet:
+    build:
+      context: ..               # repo root, so the embed paths resolve
+      dockerfile: deploy/Dockerfile
+    image: throughnet/sensing-server:latest
+    container_name: throughnet
+    restart: unless-stopped
+    network_mode: host          # multi-node ESP32 UDP arrives from many source
+                                # IPs; host networking keeps every datagram
+                                # (and lets mDNS on :5353 work). On Docker
+                                # Desktop (non-Linux), drop this and publish
+                                # "8080:8080" + "5005:5005/udp" instead.
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      # CSI source: esp32 (real frames on UDP :5005). simulated for a demo.
+      - CSI_SOURCE=${CSI_SOURCE:-esp32}
+      # Set a token to bearer-gate /api/v1/* once the dashboard is LAN-exposed.
+      - RUVIEW_API_TOKEN=${RUVIEW_API_TOKEN:-}
+    # In-container flashing needs the board passed through (host setup is simpler):
+    # devices:
+    #   - "/dev/ttyACM0:/dev/ttyACM0"

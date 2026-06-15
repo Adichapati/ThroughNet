@@ -1,0 +1,48 @@
+# ThroughNet — always-on systemd unit (ADR-151 A4).
+#
+# Runs the single self-contained sensing-server (UI + firmware embedded, built
+# with `cargo build --release --features bundle`). This is for RUNNING an
+# already-set-up fleet headless/always-on; first-time flash + provision is done
+# interactively (the in-app setup, or scripts/throughnet-app.sh) on the machine
+# the boards are plugged into.
+#
+# Install:
+#   ( cd app && npm run build )   # the embedded UI
+#   ( cd v2 && cargo build --release --features bundle -p wifi-densepose-sensing-server )
+#   sudo install -m755 v2/target/release/sensing-server /usr/local/bin/throughnet-server
+#   sudo cp deploy/throughnet.service /etc/systemd/system/
+#   # edit User= below to a real account, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now throughnet
+#   # CSI ingest is UDP 5005; open the firewall (the live-bring-up #1 gotcha):
+#   sudo ufw allow 5005/udp && sudo ufw allow 5353/udp
+
+[Unit]
+Description=ThroughNet camera-free presence/motion/breathing sensing server
+Documentation=https://github.com/Adichapati/ThroughNet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as a real, unprivileged account (create one, or use your login user).
+User=throughnet
+# --source esp32: ingest real CSI on UDP :5005. HTTP/WS stay bound to 127.0.0.1
+# by default (the setup endpoints are localhost-only by construction). To view
+# the dashboard from other devices on the LAN, set SENSING_BIND_ADDR=0.0.0.0 —
+# but then also set RUVIEW_API_TOKEN=<token> so /api/v1/* (incl. setup) is
+# bearer-gated, since the setup surface would become LAN-reachable.
+ExecStart=/usr/local/bin/throughnet-server --source esp32 --http-port 8080
+Restart=on-failure
+RestartSec=3
+# In-app flashing/provisioning writes /dev/ttyACM* — uncomment if you run setup
+# through the always-on service (otherwise the run path needs no serial access):
+# SupplementaryGroups=uucp dialout
+
+# Hardening (the run path needs no privileges; loosen only if setup runs here).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

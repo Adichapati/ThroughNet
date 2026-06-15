@@ -118,8 +118,9 @@ struct Args {
     #[command(flatten)]
     mqtt_opts: wifi_densepose_sensing_server::cli::MqttArgs,
 
-    /// Data source: auto, wifi, esp32, simulate
-    #[arg(long, default_value = "auto")]
+    /// Data source: auto, wifi, esp32, simulate. `CSI_SOURCE` env sets it too
+    /// (CLI wins) — the documented knob for the docker-compose / systemd deploy.
+    #[arg(long, default_value = "auto", env = "CSI_SOURCE")]
     source: String,
 
     /// Run vital sign detection benchmark (1000 frames) and exit

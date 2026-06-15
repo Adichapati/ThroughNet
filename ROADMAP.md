@@ -348,7 +348,12 @@ UI. See **Phase R** above. Current front:*
    flash + `provision.py --auto`, subprocess-driven per ADR-151; espflash/Rust port deferred to A4) drive the
    **flash** + **connect** steps. **Verified end-to-end on a live ESP32-S3** — scan→flash→provision via curl
    *and* clicked through the app UI (Vite proxy → server → board); board restored to node 3 RX, streaming
-   (`csi_fps≈137`), doctor `csi_ingest` → ok. Next: **A4** single-binary packaging (ADR-151 §7).
+   (`csi_fps≈137`), doctor `csi_ingest` → ok. **A4 in progress**: firmware now **embedded** in the
+   binary (`embed-firmware` + a `bundle` feature = UI + firmware; flash extracts embedded bins when no
+   on-disk dir — proven by flashing a real board with the firmware dir moved away), and **always-on deploy
+   artifacts** landed (`deploy/` systemd unit + Dockerfile + docker-compose; `CSI_SOURCE` env honored).
+   Remaining A4: build/publish the container image, and the optional espflash/Rust port to drop Python from
+   the *setup* path (the runtime is already Python-free). Then docs rewrite (Phase 4.4).
    Replaces the CLI-first framing of Phase 3.
 4. **Second-room validation (R5)** — re-run `validate.py` in another room before
    calling the numbers "accuracy"; confirm the empty-floor normalization generalizes.
