@@ -102,6 +102,8 @@ tn-onboarding .check:last-child{ border-bottom:0; }
 tn-onboarding .check .mk{ width:16px; height:16px; display:grid; place-items:center; border:1.5px solid var(--ink); flex:none; }
 tn-onboarding .check.ok .mk{ background:var(--sage); }
 tn-onboarding .check.warn .mk{ background:var(--sand); }
+tn-onboarding .check.fail .mk{ background:var(--clay); color:var(--paper-3); }
+tn-onboarding .check.info .mk{ background:var(--paper-2); color:var(--ink-soft); }
 tn-onboarding .check .lbl{ font-size:13px; }
 tn-onboarding .check .sub{ font-family:var(--f-mono); font-size:10px; color:var(--ink-soft); margin-top:2px; }
 tn-onboarding code.cmd{ font-family:var(--f-mono); font-size:11px; background:var(--paper-2);

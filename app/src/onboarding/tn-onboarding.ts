@@ -6,6 +6,7 @@
 import { LitElement, html, svg, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { createTear, type TearHandle } from './tn-tear';
+import { fetchDoctor, MOCK_DOCTOR, type DoctorCheck, type DoctorReport } from './tn-setup';
 
 const STEPS = ['prepare', 'flash', 'connect', 'place', 'calibrate', 'done'];
 
@@ -28,12 +29,17 @@ export class TnOnboarding extends LitElement {
   @state() private step = 0;
   @state() private coverGone = false;
   @state() private handVisible = false;
+  // ADR-151 A3: the prepare step's host preflight (real /api/v1/setup/doctor).
+  @state() private doctor?: DoctorReport;
+  @state() private doctorLoading = false;
+  @state() private doctorError = false;
   private tear?: TearHandle;
   private handTimer?: ReturnType<typeof setTimeout>;
 
   private q(sel: string) { return this.querySelector(sel) as HTMLElement | null; }
 
   firstUpdated() {
+    this.runDoctor();                                 // preflight ready by the time prepare shows
     const jump = new URLSearchParams(location.search).get('onbStep');
     if (jump !== null) {                              // dev: skip the cover to a step
       this.step = Math.max(0, Math.min(5, parseInt(jump, 10) || 0));
@@ -57,6 +63,17 @@ export class TnOnboarding extends LitElement {
   private next() { if (this.step < 5) this.step += 1; else this.finish(); }
   private back() { if (this.step > 0) this.step -= 1; }
   private finish() { this.dispatchEvent(new CustomEvent('finish', { bubbles: true, composed: true })); }
+
+  // Run (or re-run) the host preflight. ?mock keeps it serverless for demos.
+  private async runDoctor() {
+    if (new URLSearchParams(location.search).has('mock')) {
+      this.doctor = MOCK_DOCTOR; this.doctorError = false; this.doctorLoading = false; return;
+    }
+    this.doctorLoading = true; this.doctorError = false;
+    try { this.doctor = await fetchDoctor(); }
+    catch { this.doctorError = true; }
+    finally { this.doctorLoading = false; }
+  }
 
   render() {
     return html`
@@ -111,14 +128,39 @@ export class TnOnboarding extends LitElement {
   }
 
   private stepPrepare() {
+    const checks = this.doctor?.checks ?? [];
+    const hasWarn = checks.some((c) => c.status === 'warn' || c.status === 'fail');
+    const cta = this.doctorError || hasWarn ? 'continue anyway' : 'continue';
     return html`<div class="card">${this.header('prepare')}
       <div class="card-body wide">
         <p>ThroughNet needs a few things from this machine before it can reach your boards. Here's the preflight.</p>
-        <div class="check ok"><span class="mk">✓</span><div><div class="lbl">Serial access — <code class="cmd">/dev/ttyACM*</code> writable</div><div class="sub">you're in the <b>uucp</b> group</div></div></div>
-        <div class="check warn"><span class="mk">!</span><div><div class="lbl">Firewall — open the sensing ports</div><div class="sub">run <code class="cmd">sudo ufw allow 5005/udp &amp;&amp; sudo ufw allow 5353/udp</code> · then re-check</div></div></div>
-        <div class="check ok"><span class="mk">✓</span><div><div class="lbl">Ports free — 8080 (ui) · 5005 (csi)</div><div class="sub">nothing else is listening</div></div></div>
-        ${this.nav('continue anyway')}
+        ${this.renderDoctor()}
+        <div class="actions">
+          <button class="btn ghost" @click=${this.runDoctor} ?disabled=${this.doctorLoading}>${this.doctorLoading ? 'checking…' : 're-check'}</button>
+          <span class="spacer"></span>
+          <button class="btn cta" @click=${this.next}>${cta} ▸</button>
+        </div>
       </div></div>`;
+  }
+
+  private renderDoctor() {
+    if (this.doctorLoading && !this.doctor) {
+      return html`<div class="check info"><span class="mk">·</span><div><div class="lbl">running preflight…</div></div></div>`;
+    }
+    if (this.doctorError) {
+      return html`<div class="check warn"><span class="mk">!</span><div>
+        <div class="lbl">couldn't reach the setup service</div>
+        <div class="sub">make sure ThroughNet is running, then <b>re-check</b></div></div></div>`;
+    }
+    return (this.doctor?.checks ?? []).map((c) => this.renderCheck(c));
+  }
+
+  private renderCheck(c: DoctorCheck) {
+    const mark = c.status === 'ok' ? '✓' : c.status === 'warn' ? '!' : c.status === 'fail' ? '✕' : '·';
+    return html`<div class="check ${c.status}"><span class="mk">${mark}</span><div>
+      <div class="lbl">${c.label}</div>
+      <div class="sub">${c.detail}${c.fix ? html` · <code class="cmd">${c.fix}</code>` : ''}</div>
+    </div></div>`;
   }
 
   private stepFlash() {

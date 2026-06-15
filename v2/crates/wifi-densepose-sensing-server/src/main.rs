@@ -4619,6 +4619,274 @@ async fn throughnet_status(State(state): State<SharedState>) -> Json<serde_json:
     }))
 }
 
+// ── ADR-151 A3: in-app setup — doctor preflight ──────────────────────────────
+// The host checks behind the onboarding "prepare" step. Read-only (they change
+// nothing) and localhost-only by construction (HTTP binds 127.0.0.1). They
+// report the exact traps live bring-up hit — serial-group membership, ufw
+// blocking the sensing ports, and whether CSI is actually arriving — each with
+// a copy-paste fix. This is the no-hardware half of A3; flash/provision (which
+// need a board on USB) are the explicit hardware gate, landed separately.
+
+/// Build one preflight check entry for the doctor JSON.
+fn doctor_check(
+    id: &str,
+    label: &str,
+    status: &str,
+    detail: String,
+    fix: Option<&str>,
+) -> serde_json::Value {
+    serde_json::json!({ "id": id, "label": label, "status": status, "detail": detail, "fix": fix })
+}
+
+/// Serial access: is the user in a group that can write `/dev/ttyACM*`, and what
+/// boards are plugged in right now. (Device presence is informational — none is
+/// fine pre-flash.)
+#[cfg(target_os = "linux")]
+async fn doctor_serial_check() -> serde_json::Value {
+    let groups = tokio::process::Command::new("id")
+        .arg("-nG")
+        .output()
+        .await
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let in_group = groups
+        .split_whitespace()
+        .any(|g| g == "uucp" || g == "dialout");
+
+    let mut devs: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir("/dev") {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("ttyACM") || name.starts_with("ttyUSB") {
+                devs.push(format!("/dev/{name}"));
+            }
+        }
+    }
+    devs.sort();
+    let dev_note = if devs.is_empty() {
+        "no USB serial device plugged in yet".to_string()
+    } else {
+        format!("detected {}", devs.join(", "))
+    };
+
+    if in_group {
+        doctor_check(
+            "serial_group",
+            "Serial access — write /dev/ttyACM*",
+            "ok",
+            format!("you're in a serial group · {dev_note}"),
+            None,
+        )
+    } else {
+        doctor_check(
+            "serial_group",
+            "Serial access — write /dev/ttyACM*",
+            "warn",
+            format!("not in the uucp/dialout group · {dev_note}"),
+            Some("sudo usermod -aG uucp $USER   # then log out and back in"),
+        )
+    }
+}
+
+/// Firewall: ufw is the #1 live-bring-up trap (it silently eats inbound CSI on
+/// UDP 5005). Honest about what we can verify without root: not-installed /
+/// inactive → ports open (ok); active + rules readable → verify 5005+5353;
+/// active but rules need root → warn with the fix rather than claim a pass.
+#[cfg(target_os = "linux")]
+async fn doctor_firewall_check() -> serde_json::Value {
+    const FIX: &str = "sudo ufw allow 5005/udp && sudo ufw allow 5353/udp";
+    let label = "Firewall — sensing ports open";
+
+    let ufw_path = ["/usr/sbin/ufw", "/usr/bin/ufw", "/sbin/ufw"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists());
+    let Some(ufw_path) = ufw_path else {
+        return doctor_check(
+            "firewall",
+            label,
+            "ok",
+            "no ufw firewall detected — inbound UDP is open".to_string(),
+            None,
+        );
+    };
+
+    // ufw.conf is world-readable; ENABLED=no means it isn't filtering.
+    let enabled = std::fs::read_to_string("/etc/ufw/ufw.conf")
+        .map(|c| {
+            c.lines()
+                .any(|l| l.trim().eq_ignore_ascii_case("ENABLED=yes"))
+        })
+        .unwrap_or(false);
+    if !enabled {
+        return doctor_check(
+            "firewall",
+            label,
+            "ok",
+            "ufw is installed but inactive — inbound UDP is open".to_string(),
+            None,
+        );
+    }
+
+    // Active — try to read the rule table (needs root; errors out cleanly as a
+    // normal user, no prompt). If we can read it, verify both sensing ports.
+    if let Ok(out) = tokio::process::Command::new(ufw_path)
+        .arg("status")
+        .output()
+        .await
+    {
+        if out.status.success() {
+            let txt = String::from_utf8_lossy(&out.stdout);
+            let allows = |port: &str| {
+                txt.lines()
+                    .any(|l| l.contains(port) && !l.to_ascii_uppercase().contains("DENY"))
+            };
+            let ok5005 = allows("5005/udp") || allows("5005 ");
+            let ok5353 = allows("5353/udp") || allows("5353 ");
+            if ok5005 && ok5353 {
+                return doctor_check(
+                    "firewall",
+                    label,
+                    "ok",
+                    "ufw active · 5005/udp + 5353/udp allowed".to_string(),
+                    None,
+                );
+            }
+            let mut missing = Vec::new();
+            if !ok5005 {
+                missing.push("5005/udp");
+            }
+            if !ok5353 {
+                missing.push("5353/udp");
+            }
+            return doctor_check(
+                "firewall",
+                label,
+                "warn",
+                format!("ufw active · {} not allowed — CSI will be dropped", missing.join(" + ")),
+                Some(FIX),
+            );
+        }
+    }
+    doctor_check(
+        "firewall",
+        label,
+        "warn",
+        "ufw is active; couldn't verify the sensing-port rules without root".to_string(),
+        Some(FIX),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn doctor_serial_check() -> serde_json::Value {
+    doctor_check(
+        "serial_group",
+        "Serial access",
+        "info",
+        "serial preflight is Linux-only for now".to_string(),
+        None,
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn doctor_firewall_check() -> serde_json::Value {
+    doctor_check(
+        "firewall",
+        "Firewall",
+        "info",
+        "firewall preflight is Linux-only for now".to_string(),
+        None,
+    )
+}
+
+/// CSI ingest: ties the firewall check to reality — are frames actually arriving?
+/// `node_count` = nodes that sent a frame in the last 10 s; `last_frame_age_s` =
+/// seconds since any CSI frame (None = none ever).
+fn doctor_csi_check(node_count: usize, last_frame_age_s: Option<u64>) -> serde_json::Value {
+    let label = "CSI ingest — boards streaming";
+    match last_frame_age_s {
+        Some(age) if age <= 10 => doctor_check(
+            "csi_ingest",
+            label,
+            "ok",
+            format!("{node_count} node(s) streaming · last frame {age}s ago"),
+            None,
+        ),
+        Some(age) => doctor_check(
+            "csi_ingest",
+            label,
+            "warn",
+            format!("no CSI for {age}s — check board power / Wi-Fi / firewall"),
+            Some("sudo ufw allow 5005/udp && sudo ufw allow 5353/udp"),
+        ),
+        None => doctor_check(
+            "csi_ingest",
+            label,
+            "info",
+            "no CSI frames yet — flash + provision a board to begin".to_string(),
+            None,
+        ),
+    }
+}
+
+/// GET /api/v1/setup/doctor — host preflight for the onboarding "prepare" step.
+/// See the section header above. Localhost-only, read-only.
+async fn setup_doctor(State(state): State<SharedState>) -> Json<serde_json::Value> {
+    // Snapshot the CSI-ingest view and release the lock *before* any subprocess
+    // (`id`, `ufw`) so we never await a child process while holding the lock.
+    let (node_count, last_frame_age_s) = {
+        let s = state.read().await;
+        let fresh = s
+            .node_states
+            .values()
+            .filter(|ns| {
+                ns.last_frame_time
+                    .map(|t| t.elapsed().as_secs() <= 10)
+                    .unwrap_or(false)
+            })
+            .count();
+        let age = s.last_esp32_frame.map(|t| t.elapsed().as_secs());
+        (fresh, age)
+    };
+
+    let checks = vec![
+        doctor_serial_check().await,
+        doctor_firewall_check().await,
+        doctor_csi_check(node_count, last_frame_age_s),
+    ];
+    // Healthy when nothing hard-failed; warnings are fine to proceed past.
+    let ok = !checks.iter().any(|c| c["status"] == "fail");
+    Json(serde_json::json!({ "ok": ok, "checks": checks }))
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::{doctor_check, doctor_csi_check};
+
+    #[test]
+    fn csi_check_maps_ingest_state_to_status() {
+        // never received → informational (pre-flash, not a problem)
+        assert_eq!(doctor_csi_check(0, None)["status"], "info");
+        // fresh frames → ok, and the node count is surfaced
+        let ok = doctor_csi_check(2, Some(3));
+        assert_eq!(ok["status"], "ok");
+        assert!(ok["detail"].as_str().unwrap().contains("2 node"));
+        // had frames but they stopped → warn with the firewall fix
+        let warn = doctor_csi_check(0, Some(42));
+        assert_eq!(warn["status"], "warn");
+        assert!(warn["fix"].as_str().unwrap().contains("5005/udp"));
+    }
+
+    #[test]
+    fn check_shape_carries_fix_and_nulls_it() {
+        let c = doctor_check("x", "X", "warn", "d".into(), Some("do this"));
+        assert_eq!(c["id"], "x");
+        assert_eq!(c["status"], "warn");
+        assert_eq!(c["fix"], "do this");
+        assert!(doctor_check("y", "Y", "ok", "d".into(), None)["fix"].is_null());
+    }
+}
+
 /// Generate a simple timestamp string (epoch seconds) for recording IDs.
 fn chrono_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -7163,6 +7431,8 @@ async fn main() {
         .route("/api/v1/throughnet/baseline/start", post(throughnet_baseline_start))
         .route("/api/v1/throughnet/baseline/stop", post(throughnet_baseline_stop))
         .route("/api/v1/throughnet/status", get(throughnet_status))
+        // ADR-151 A3: in-app setup — host preflight (localhost-only, read-only).
+        .route("/api/v1/setup/doctor", get(setup_doctor))
         // ADR-044 §5.3: runtime-configurable dedup factor
         .route(
             "/api/v1/config/dedup-factor",
