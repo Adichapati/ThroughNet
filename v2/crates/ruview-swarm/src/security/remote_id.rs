@@ -48,15 +48,16 @@ impl RemoteIdBroadcast {
         self.operator_lon = operator_pos.1;
     }
 
-    /// Encode a 25-byte ASTM F3411 Basic ID message.
-    /// Format: [message_type(1)] [id_type(1)] [uas_id(20)] [reserved(3)]
+    /// Encode a 25-byte ASTM F3411 Basic ID message (serial number, multirotor).
     pub fn encode_basic_id(&self) -> [u8; 25] {
-        let mut buf = [0u8; 25];
-        buf[0] = 0x00; // Message type: Basic ID
-        buf[1] = 0x01; // ID type: Serial Number
-        buf[2..22].copy_from_slice(&self.uas_id);
-        // bytes 22-24: reserved
-        buf
+        remoteid::BasicId {
+            protocol_version: remoteid::PROTOCOL_VERSION,
+            id_type: remoteid::IdType::SerialNumber,
+            ua_type: remoteid::UaType::HelicopterOrMultirotor,
+            uas_id: self.uas_id,
+        }
+        .encode()
+        .expect("Basic ID fields are in range")
     }
 }
 
@@ -69,7 +70,10 @@ mod tests {
         let rid = RemoteIdBroadcast::new([0x41u8; 20]);
         let buf = rid.encode_basic_id();
         assert_eq!(buf.len(), 25);
-        assert_eq!(buf[1], 0x01); // ID type: serial number
+        let decoded = remoteid::BasicId::decode(&buf).unwrap();
+        assert_eq!(decoded.id_type, remoteid::IdType::SerialNumber);
+        assert_eq!(decoded.ua_type, remoteid::UaType::HelicopterOrMultirotor);
+        assert_eq!(decoded.protocol_version, remoteid::PROTOCOL_VERSION);
     }
 
     #[test]
